@@ -539,7 +539,7 @@ systemctl start autotune-sysctl.timer
 echo -e "\e[1;32m[✓] نصب و پیکربندی autotune-sysctl با موفقیت انجام شد.\e[0m"
 echo -e "\e[1;34m[*] تنظیمات در مسیر $SYSCTL_FILE ذخیره شدند.\e[0m"
 echo -e "\e[1;34m[*] گزارش‌ها در /var/log/autotune-sysctl.log ذخیره می‌شوند.\e[0m"
-echo -e "\e[1;34m[*] اسکریپت هر 24 ساعت یکبار اجرا خواهد شد.\e[0m"
+echo -e "\e[1;34m[*] اسکریپت هر 8 ساعت یکبار اجرا خواهد شد.\e[0m"
 echo -e "\e[1;34m[*] برای اجرای دستی: sudo $INSTALL_PATH\e[0m"
 
 exit 0
