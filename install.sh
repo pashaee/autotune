@@ -1,27 +1,27 @@
 #!/bin/bash
 
-# اسکریپت بهینه‌سازی شده autotune-sysctl
-# تنظیم خودکار پارامترهای سیستم برای حداکثر کارایی شبکه و سیستم
+#Optimized autotune-sysctl script
+#Automatically adjusts system parameters for maximum network and system performance
 
 set -e
 
-echo -e "\e[1;34m[*] نصب اسکریپت بهینه‌شده autotune-sysctl...\e[0m"
+echo -e "\e[1;34m[*] Installing script autotune-sysctl...\e[0m"
 
 INSTALL_PATH="/usr/local/bin/autotune-sysctl.sh"
 SERVICE_PATH="/etc/systemd/system/autotune-sysctl.service"
 TIMER_PATH="/etc/systemd/system/autotune-sysctl.timer"
 SYSCTL_FILE="/etc/sysctl.d/99-autotune.conf"
 
-# بررسی دسترسی روت
+# root access check
 if [ "$(id -u)" -ne 0 ]; then
-    echo -e "\e[1;31m[خطا] این اسکریپت باید با دسترسی روت اجرا شود.\e[0m"
+    echo -e "\e[1;31m[ERROR] This script must be run with root privileges.\e[0m"
     exit 1
 fi
 
-# بررسی و نصب ابزارهای مورد نیاز
-echo -e "\e[1;34m[*] بررسی ابزارهای مورد نیاز...\e[0m"
 
-# تشخیص نوع سیستم مدیریت بسته
+echo -e "\e[1;34m[*] Checking required tools...\e[0m"
+
+
 if command -v apt-get >/dev/null 2>&1; then
     PKG_MANAGER="apt-get"
     PKG_INSTALL="apt-get install -y"
@@ -38,29 +38,29 @@ elif command -v zypper >/dev/null 2>&1; then
     PKG_MANAGER="zypper"
     PKG_INSTALL="zypper install -y"
 else
-    echo -e "\e[1;33m[هشدار] سیستم مدیریت بسته شناسایی نشد. نصب خودکار ابزارها امکان‌پذیر نیست.\e[0m"
+    echo -e "\e[1;33m[!!!] Package manager not detected. Automatic installation of tools is not possible.\e[0m"
     PKG_MANAGER=""
     PKG_INSTALL=""
 fi
 
-# بررسی و نصب ethtool
+# installing ethtool
 if ! command -v ethtool >/dev/null 2>&1; then
-    echo -e "\e[1;33m[هشدار] ethtool نصب نشده است، تلاش برای نصب...\e[0m"
+    echo -e "\e[1;33m[WARNING] ethtool is not installed, attempting to install...\e[0m"
     if [ -n "$PKG_MANAGER" ]; then
         $PKG_INSTALL ethtool
         if command -v ethtool >/dev/null 2>&1; then
-            echo -e "\e[1;32m[✓] ethtool با موفقیت نصب شد.\e[0m"
+            echo -e "\e[1;32m[✓] ethtool was successfully installed.\e[0m"
         else
-            echo -e "\e[1;31m[خطا] نصب ethtool ناموفق بود.\e[0m"
+            echo -e "\e[1;31m[ERROR] Failed to install ethtool.\e[0m"
         fi
     fi
 else
-    echo -e "\e[1;32m[✓] ethtool نصب شده است.\e[0m"
+    echo -e "\e[1;32m[✓] ethtool is installed.\e[0m"
 fi
 
-# بررسی و نصب iproute2 (برای tc)
+# Check and install iproute2 (for tc)
 if ! command -v tc >/dev/null 2>&1; then
-    echo -e "\e[1;33m[هشدار] tc (از بسته iproute2) نصب نشده است، تلاش برای نصب...\e[0m"
+    echo -e "\e[1;33m[WARNING] tc (from iproute2 package) is not installed, attempting to install...\e[0m"
     if [ -n "$PKG_MANAGER" ]; then
         if [ "$PKG_MANAGER" = "apt-get" ] || [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
             $PKG_INSTALL iproute2
@@ -71,27 +71,27 @@ if ! command -v tc >/dev/null 2>&1; then
         fi
         
         if command -v tc >/dev/null 2>&1; then
-            echo -e "\e[1;32m[✓] tc با موفقیت نصب شد.\e[0m"
+            echo -e "\e[1;32m[✓] tc was successfully installed.\e[0m"
         else
-            echo -e "\e[1;31m[خطا] نصب tc ناموفق بود.\e[0m"
+            echo -e "\e[1;31m[ERROR] Failed to install tc.\e[0m"
         fi
     fi
 else
-    echo -e "\e[1;32m[✓] tc نصب شده است.\e[0m"
+    echo -e "\e[1;32m[✓] tc is installed.\e[0m"
 fi
 
-# ایجاد یک فایل پیکربندی اصلی
+# Create main configuration file
 cat <<'EOF' > "$INSTALL_PATH"
 #!/bin/bash
 
-# تنظیم متغیرهای مسیر
+# Set path variables
 SYSCTL_FILE="/etc/sysctl.d/99-autotune.conf"
 BACKUP_FILE="/etc/sysctl.d/99-autotune.bak"
 LOG_FILE="/var/log/autotune-sysctl.log"
 
-# بررسی نصب ابزارهای مورد نیاز
+# Check and install required tools
 check_and_install_tools() {
-    # تشخیص نوع سیستم مدیریت بسته
+    # Detect package management system
     if command -v apt-get >/dev/null 2>&1; then
         PKG_MANAGER="apt-get"
         PKG_INSTALL="apt-get install -y"
@@ -108,24 +108,24 @@ check_and_install_tools() {
         PKG_MANAGER="zypper"
         PKG_INSTALL="zypper install -y"
     else
-        echo "[هشدار] سیستم مدیریت بسته شناسایی نشد. نصب خودکار ابزارها امکان‌پذیر نیست."
+        echo "[WARNING] Package manager not detected. Automatic installation of tools is not possible."
         return 1
     fi
 
-    # بررسی و نصب ethtool
+    # Check and install ethtool
     if ! command -v ethtool >/dev/null 2>&1; then
-        echo "[هشدار] ethtool نصب نشده است، تلاش برای نصب..."
+        echo "[WARNING] ethtool is not installed, attempting to install..."
         $PKG_INSTALL ethtool
         if ! command -v ethtool >/dev/null 2>&1; then
-            echo "[خطا] نصب ethtool ناموفق بود."
+            echo "[ERROR] Failed to install ethtool."
         else
-            echo "[✓] ethtool با موفقیت نصب شد."
+            echo "[✓] ethtool was successfully installed."
         fi
     fi
 
-    # بررسی و نصب iproute2 (برای tc)
+    # Check and install iproute2 (for tc)
     if ! command -v tc >/dev/null 2>&1; then
-        echo "[هشدار] tc (از بسته iproute2) نصب نشده است، تلاش برای نصب..."
+        echo "[WARNING] tc (from iproute2 package) is not installed, attempting to install..."
         if [ "$PKG_MANAGER" = "apt-get" ] || [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "zypper" ]; then
             $PKG_INSTALL iproute2
         elif [ "$PKG_MANAGER" = "pacman" ]; then
@@ -133,37 +133,37 @@ check_and_install_tools() {
         fi
         
         if ! command -v tc >/dev/null 2>&1; then
-            echo "[خطا] نصب tc ناموفق بود."
+            echo "[ERROR] Failed to install tc."
         else
-            echo "[✓] tc با موفقیت نصب شد."
+            echo "[✓] tc was successfully installed."
         fi
     fi
     
     return 0
 }
 
-# بررسی و نصب ابزارها
+# Check and install tools
 check_and_install_tools
 
-# ایجاد فایل گزارش
+# Create log file
 exec > >(tee -a "${LOG_FILE}") 2>&1
-echo "--- $(date): اجرای autotune-sysctl ---"
+echo "--- $(date): Running autotune-sysctl ---"
 
-# پشتیبان‌گیری از تنظیمات قبلی
+# Backup previous settings
 if [ -f "$SYSCTL_FILE" ]; then
     cp "$SYSCTL_FILE" "$BACKUP_FILE"
-    echo "[*] از تنظیمات قبلی پشتیبان گرفته شد: $BACKUP_FILE"
+    echo "[*] Previous settings backed up to: $BACKUP_FILE"
 fi
 
-# جمع‌آوری اطلاعات سیستم
+# Collect system information
 TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 TOTAL_MEM_MB=$((TOTAL_MEM_KB / 1024))
 CPU_CORES=$(nproc)
 DEFAULT_IFACE=$(ip route | awk '/default/ {print $5}' | head -n 1)
-NETWORK_SPEED=1000  # پیش‌فرض: 1Gbps
-DISK_TYPE="HDD"     # پیش‌فرض: HDD
+NETWORK_SPEED=1000  # Default: 1Gbps
+DISK_TYPE="HDD"     # Default: HDD
 
-# تشخیص نوع دیسک (SSD یا HDD)
+# Detect disk type (SSD or HDD)
 if [ -d "/sys/block" ]; then
     ROOT_DEVICE=$(df / | awk 'NR==2 {print $1}' | sed 's/\/dev\///' | sed 's/[0-9]*$//')
     if [ -n "$ROOT_DEVICE" ] && [ -d "/sys/block/$ROOT_DEVICE" ]; then
@@ -173,7 +173,7 @@ if [ -d "/sys/block" ]; then
     fi
 fi
 
-# تشخیص سرعت شبکه
+# Detect network speed
 if [ -n "$DEFAULT_IFACE" ] && [ -d "/sys/class/net/$DEFAULT_IFACE" ]; then
     if [ -f "/sys/class/net/$DEFAULT_IFACE/speed" ]; then
         DETECTED_SPEED=$(cat "/sys/class/net/$DEFAULT_IFACE/speed" 2>/dev/null || echo 1000)
@@ -183,16 +183,16 @@ if [ -n "$DEFAULT_IFACE" ] && [ -d "/sys/class/net/$DEFAULT_IFACE" ]; then
     fi
 fi
 
-echo "[*] اطلاعات سیستم:"
-echo "    - حافظه کل: $TOTAL_MEM_MB MB"
-echo "    - تعداد هسته‌های CPU: $CPU_CORES"
-echo "    - رابط شبکه پیش‌فرض: $DEFAULT_IFACE"
-echo "    - سرعت شبکه: $NETWORK_SPEED Mbps"
-echo "    - نوع دیسک: $DISK_TYPE"
+echo "[*] System Information:"
+echo "    - Total Memory: $TOTAL_MEM_MB MB"
+echo "    - CPU Cores: $CPU_CORES"
+echo "    - Default Network Interface: $DEFAULT_IFACE"
+echo "    - Network Speed: $NETWORK_SPEED Mbps"
+echo "    - Disk Type: $DISK_TYPE"
 
-# تنظیم مقادیر بر اساس حافظه سیستم
+# Configure values based on system memory
 if [ "$TOTAL_MEM_MB" -le 2048 ]; then
-    # سیستم با حافظه کم (≤ 2GB)
+    # Low memory system (≤ 2GB)
     RMEM_MAX=4194304           # ~4MB
     WMEM_MAX=4194304           # ~4MB
     TCP_MEM="196608 262144 393216"
@@ -202,7 +202,7 @@ if [ "$TOTAL_MEM_MB" -le 2048 ]; then
     INOTIFY_MAX=65536
     MIN_FREE_KB=32768
 elif [ "$TOTAL_MEM_MB" -le 4096 ]; then
-    # سیستم با حافظه متوسط (≤ 4GB)
+    # Medium memory system (≤ 4GB)
     RMEM_MAX=8388608           # ~8MB
     WMEM_MAX=8388608           # ~8MB
     TCP_MEM="393216 524288 786432"
@@ -212,7 +212,7 @@ elif [ "$TOTAL_MEM_MB" -le 4096 ]; then
     INOTIFY_MAX=131072
     MIN_FREE_KB=49152
 elif [ "$TOTAL_MEM_MB" -le 8192 ]; then
-    # سیستم با حافظه بالا (≤ 8GB)
+    # High memory system (≤ 8GB)
     RMEM_MAX=16777216          # ~16MB
     WMEM_MAX=16777216          # ~16MB
     TCP_MEM="786432 1048576 1572864"
@@ -222,7 +222,7 @@ elif [ "$TOTAL_MEM_MB" -le 8192 ]; then
     INOTIFY_MAX=262144
     MIN_FREE_KB=65536
 elif [ "$TOTAL_MEM_MB" -le 16384 ]; then
-    # سیستم با حافظه خیلی بالا (≤ 16GB)
+    # Very high memory system (≤ 16GB)
     RMEM_MAX=33554432          # ~32MB
     WMEM_MAX=33554432          # ~32MB
     TCP_MEM="1572864 2097152 3145728"
@@ -232,7 +232,7 @@ elif [ "$TOTAL_MEM_MB" -le 16384 ]; then
     INOTIFY_MAX=524288
     MIN_FREE_KB=98304
 else
-    # سیستم با حافظه فوق‌العاده (> 16GB)
+    # Extremely high memory system (> 16GB)
     RMEM_MAX=67108864          # ~64MB
     WMEM_MAX=67108864          # ~64MB
     TCP_MEM="3145728 4194304 6291456"
@@ -243,9 +243,9 @@ else
     MIN_FREE_KB=131072
 fi
 
-# تنظیم بر اساس سرعت شبکه
+# Configure based on network speed
 if [ "$NETWORK_SPEED" -ge 10000 ]; then
-    # شبکه 10Gbps یا بیشتر
+    # 10Gbps network or higher
     if [ "$TOTAL_MEM_MB" -gt 16384 ]; then
         RMEM_MAX=134217728     # ~128MB
         WMEM_MAX=134217728     # ~128MB
@@ -258,43 +258,43 @@ if [ "$NETWORK_SPEED" -ge 10000 ]; then
         SOMAXCONN=16384
     fi
 elif [ "$NETWORK_SPEED" -ge 1000 ]; then
-    # شبکه 1Gbps
+    # 1Gbps network
     NETDEV_MAX_BACKLOG=8192
     SOMAXCONN=8192
 else
-    # شبکه کمتر از 1Gbps
+    # Less than 1Gbps network
     NETDEV_MAX_BACKLOG=2048
     SOMAXCONN=2048
 fi
 
-# تنظیم الگوریتم صف و کنترل ازدحام
+# Configure queue algorithm and congestion control
 QDISC="fq_codel"
 CONGESTION="bbr"
 if ! grep -q "bbr" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
-    echo "[*] BBR در دسترس نیست، استفاده از cubic به جای آن"
+    echo "[*] BBR is not available, using cubic instead"
     CONGESTION="cubic"
 elif grep -q "bbr2" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
-    echo "[*] BBR2 در دسترس است، استفاده از bbr2 به جای bbr"
+    echo "[*] BBR2 is available, using bbr2 instead of bbr"
     CONGESTION="bbr2"
 fi
 
-# بررسی پشتیبانی از fq_codel
+# Check fq_codel support
 if ! tc qdisc show 2>/dev/null | grep -q "fq_codel"; then
     if modprobe sch_fq_codel 2>/dev/null; then
-        echo "[*] ماژول fq_codel با موفقیت بارگذاری شد"
+        echo "[*] fq_codel module loaded successfully"
     else
-        echo "[*] fq_codel پشتیبانی نمی‌شود، استفاده از fq به جای آن"
+        echo "[*] fq_codel is not supported, using fq instead"
         QDISC="fq"
         if ! tc qdisc show 2>/dev/null | grep -q "fq"; then
             if ! modprobe sch_fq 2>/dev/null; then
-                echo "[*] fq نیز پشتیبانی نمی‌شود، استفاده از پیش‌فرض"
+                echo "[*] fq is also not supported, using default"
                 QDISC="pfifo_fast"
             fi
         fi
     fi
 fi
 
-# بهینه‌سازی برای نوع دیسک
+# Disk type optimization
 if [ "$DISK_TYPE" = "SSD" ]; then
     SWAPPINESS=1
     VFS_CACHE_PRESSURE=50
@@ -309,17 +309,17 @@ else
     MAX_MAP_COUNT=524288
 fi
 
-# ایجاد فایل پیکربندی سیستم
+# Create system configuration file
 cat <<EOT > "$SYSCTL_FILE"
-# تنظیمات بهینه‌سازی شده کرنل لینوکس
-# تاریخ ایجاد: $(date)
+# Optimized Linux kernel settings
+# Created on: $(date)
 
-# --- تنظیمات شبکه ---
-# صف و کنترل ازدحام
+# --- Network Settings ---
+# Queue and congestion control
 net.core.default_qdisc=$QDISC
 net.ipv4.tcp_congestion_control=$CONGESTION
 
-# بافرهای دریافت و ارسال
+# Send and receive buffers
 net.core.rmem_max=$RMEM_MAX
 net.core.wmem_max=$WMEM_MAX
 net.core.rmem_default=$((RMEM_MAX / 4))
@@ -330,7 +330,7 @@ net.ipv4.tcp_mem=$TCP_MEM
 net.ipv4.udp_rmem_min=8192
 net.ipv4.udp_wmem_min=8192
 
-# بهینه‌سازی اتصالات TCP
+# TCP connection optimization
 net.ipv4.tcp_keepalive_time=60
 net.ipv4.tcp_keepalive_intvl=10
 net.ipv4.tcp_keepalive_probes=6
@@ -350,10 +350,10 @@ net.ipv4.tcp_synack_retries=2
 net.ipv4.tcp_syncookies=1
 net.ipv4.tcp_ecn=1
 
-# افزایش محدوده پورت‌های محلی
+# Increase local port range
 net.ipv4.ip_local_port_range=1024 65535
 
-# سایر تنظیمات شبکه
+# Other network settings
 net.core.somaxconn=$SOMAXCONN
 net.core.netdev_max_backlog=$NETDEV_MAX_BACKLOG
 net.ipv4.tcp_moderate_rcvbuf=1
@@ -366,12 +366,12 @@ net.ipv4.conf.default.accept_redirects=0
 net.ipv4.conf.all.secure_redirects=0
 net.ipv4.conf.default.secure_redirects=0
 
-# تنظیمات نظارت بر اتصال
+# Connection tracking settings
 net.netfilter.nf_conntrack_max=$IP_CONNTRACK_MAX
 net.netfilter.nf_conntrack_tcp_timeout_established=86400
 net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
 
-# --- تنظیمات سیستم فایل و حافظه ---
+# --- Filesystem and Memory Settings ---
 fs.inotify.max_user_watches=$INOTIFY_MAX
 fs.inotify.max_user_instances=1024
 fs.file-max=$FILE_MAX
@@ -380,7 +380,7 @@ fs.suid_dumpable=0
 fs.protected_hardlinks=1
 fs.protected_symlinks=1
 
-# تنظیمات مربوط به حافظه مجازی
+# Virtual memory settings
 vm.swappiness=$SWAPPINESS
 vm.vfs_cache_pressure=$VFS_CACHE_PRESSURE
 vm.dirty_ratio=$DIRTY_RATIO
@@ -393,7 +393,7 @@ vm.page-cluster=3
 vm.dirty_expire_centisecs=3000
 vm.dirty_writeback_centisecs=500
 
-# --- تنظیمات کرنل و امنیتی ---
+# --- Kernel and Security Settings ---
 kernel.sched_autogroup_enabled=1
 kernel.sched_migration_cost_ns=5000000
 kernel.sched_latency_ns=10000000
@@ -404,32 +404,32 @@ kernel.threads-max=$((FILE_MAX / 4))
 kernel.sysrq=1
 kernel.randomize_va_space=2
 
-# تنظیمات منطبق با نوع سیستم
+# System-specific settings
 kernel.sched_child_runs_first=0
 kernel.numa_balancing=0
 EOT
 
-# بررسی و اعمال تنظیمات جدید
+# Apply the new settings
 if ! sysctl --system; then
-    echo -e "\e[1;31m[خطا] اعمال تنظیمات با مشکل مواجه شد.\e[0m"
-    # بازگرداندن فایل پشتیبان در صورت خطا
+    echo -e "\e[1;31m[ERROR] Problem applying settings.\e[0m"
+    # Restore backup file in case of error
     if [ -f "$BACKUP_FILE" ]; then
         mv "$BACKUP_FILE" "$SYSCTL_FILE"
         sysctl --system
-        echo "[*] تنظیمات به حالت قبل بازگردانده شد."
+        echo "[*] Settings restored to previous state."
     fi
     exit 1
 fi
 
-# اعمال تنظیمات خاص برای رابط شبکه فعلی
+# Apply specific settings for current network interface
 if [ -n "$DEFAULT_IFACE" ]; then
-    echo "[*] تنظیم پارامترهای رابط شبکه $DEFAULT_IFACE"
+    echo "[*] Setting parameters for network interface $DEFAULT_IFACE"
     
-    # افزایش بافر حلقه برای کارت شبکه
+    # Increase ring buffer for network card
     if [ -d "/sys/class/net/$DEFAULT_IFACE/queues" ]; then
         RX_QUEUES=$(ls -1 /sys/class/net/$DEFAULT_IFACE/queues/ | grep "rx-" | wc -l)
         if [ "$RX_QUEUES" -gt 0 ]; then
-            echo "[*] تنظیم $RX_QUEUES صف دریافت"
+            echo "[*] Setting $RX_QUEUES receive queues"
             if [ "$NETWORK_SPEED" -ge 10000 ]; then
                 RX_RING=4096
             elif [ "$NETWORK_SPEED" -ge 1000 ]; then
@@ -438,7 +438,7 @@ if [ -n "$DEFAULT_IFACE" ]; then
                 RX_RING=1024
             fi
             
-            # تلاش برای تنظیم اندازه حلقه
+            # Try to set ring size
             if ethtool -g "$DEFAULT_IFACE" &>/dev/null; then
                 MAX_RING=$(ethtool -g "$DEFAULT_IFACE" 2>/dev/null | grep "RX:" -A 1 | tail -1 | awk '{print $1}')
                 if [ -n "$MAX_RING" ] && [ "$MAX_RING" -gt 0 ]; then
@@ -446,37 +446,37 @@ if [ -n "$DEFAULT_IFACE" ]; then
                         RX_RING=$MAX_RING
                     fi
                     ethtool -G "$DEFAULT_IFACE" rx "$RX_RING" &>/dev/null && \
-                        echo "[*] اندازه حلقه دریافت $DEFAULT_IFACE به $RX_RING تنظیم شد" || \
-                        echo "[*] خطا در تنظیم اندازه حلقه دریافت"
+                        echo "[*] $DEFAULT_IFACE receive ring size set to $RX_RING" || \
+                        echo "[*] Error setting receive ring size"
                 fi
             fi
         fi
     fi
     
-    # بررسی و تنظیم TSO و LRO
+    # Check and set TSO and LRO
     if ethtool -k "$DEFAULT_IFACE" &>/dev/null; then
-        echo "[*] بهینه‌سازی offload انتقال"
-        # فعال کردن قابلیت‌های offload
+        echo "[*] Optimizing transfer offload"
+        # Enable offload capabilities
         ethtool -K "$DEFAULT_IFACE" tso on gso on gro on sg on rx on tx on &>/dev/null || true
     fi
     
-    # تنظیم قوانین صف برای رابط شبکه
+    # Set queue rules for network interface
     if tc qdisc show dev "$DEFAULT_IFACE" &>/dev/null; then
-        echo "[*] تنظیم سیاست صف برای $DEFAULT_IFACE به $QDISC"
+        echo "[*] Setting queue policy for $DEFAULT_IFACE to $QDISC"
         tc qdisc replace dev "$DEFAULT_IFACE" root "$QDISC" &>/dev/null || \
-            echo "[*] خطا در تنظیم سیاست صف"
+            echo "[*] Error setting queue policy"
     fi
     
-    # تنظیم MTU حذف شد طبق درخواست
+    # MTU setting removed as requested
 fi
 
-echo -e "\e[1;32m[✓] تنظیمات سیستم با موفقیت بهینه‌سازی شد.\e[0m"
+echo -e "\e[1;32m[✓] System settings have been successfully optimized.\e[0m"
 exit 0
 EOF
 
 chmod +x "$INSTALL_PATH"
 
-# ایجاد سرویس systemd
+# Create systemd service
 cat <<EOF > "$SERVICE_PATH"
 [Unit]
 Description=Auto-tune sysctl parameters
@@ -494,10 +494,10 @@ RestartSec=60
 WantedBy=multi-user.target
 EOF
 
-# ایجاد تایمر systemd
+# Create systemd timer
 cat <<EOF > "$TIMER_PATH"
 [Unit]
-Description=اجرای دوره‌ای autotune-sysctl
+Description=Run autotune-sysctl periodically
 After=network.target
 
 [Timer]
@@ -511,35 +511,35 @@ Unit=autotune-sysctl.service
 WantedBy=timers.target
 EOF
 
-# نصب درایورها و ماژول‌های مورد نیاز
-echo -e "\e[1;34m[*] بررسی و نصب ماژول‌های مورد نیاز...\e[0m"
+# Install required drivers and modules
+echo -e "\e[1;34m[*] Checking and installing required modules...\e[0m"
 for MODULE in tcp_bbr sch_fq_codel sch_fq nf_conntrack; do
     if ! lsmod | grep -q "$MODULE"; then
-        echo "[*] بارگذاری ماژول $MODULE"
-        modprobe "$MODULE" 2>/dev/null || echo "[!] ماژول $MODULE در دسترس نیست"
+        echo "[*] Loading module $MODULE"
+        modprobe "$MODULE" 2>/dev/null || echo "[!] Module $MODULE is not available"
     fi
 done
 
-# ثبت ماژول‌ها برای بارگذاری در هنگام بوت
+# Register modules to be loaded at boot
 if [ ! -f "/etc/modules-load.d/autotune.conf" ]; then
-    echo -e "# ماژول‌های مورد نیاز برای autotune-sysctl\ntcp_bbr\nsch_fq_codel\nsch_fq\nnf_conntrack" > "/etc/modules-load.d/autotune.conf"
-    echo "[*] ماژول‌های مورد نیاز به فایل پیکربندی بوت اضافه شدند"
+    echo -e "# Required modules for autotune-sysctl\ntcp_bbr\nsch_fq_codel\nsch_fq\nnf_conntrack" > "/etc/modules-load.d/autotune.conf"
+    echo "[*] Required modules added to boot configuration file"
 fi
 
-# بازخوانی پیکربندی سیستم
+# Reload system configuration
 systemctl daemon-reload
 
-# فعال‌سازی سرویس‌ها
-echo -e "\e[1;34m[*] فعال‌سازی سرویس و تایمر...\e[0m"
+# Enable services
+echo -e "\e[1;34m[*] Enabling service and timer...\e[0m"
 systemctl enable autotune-sysctl.service
 systemctl enable autotune-sysctl.timer
 systemctl start autotune-sysctl.service
 systemctl start autotune-sysctl.timer
 
-echo -e "\e[1;32m[✓] نصب و پیکربندی autotune-sysctl با موفقیت انجام شد.\e[0m"
-echo -e "\e[1;34m[*] تنظیمات در مسیر $SYSCTL_FILE ذخیره شدند.\e[0m"
-echo -e "\e[1;34m[*] گزارش‌ها در /var/log/autotune-sysctl.log ذخیره می‌شوند.\e[0m"
-echo -e "\e[1;34m[*] اسکریپت هر 8 ساعت یکبار اجرا خواهد شد.\e[0m"
-echo -e "\e[1;34m[*] برای اجرای دستی: sudo $INSTALL_PATH\e[0m"
+echo -e "\e[1;32m[✓] Installation and configuration of autotune-sysctl completed successfully.\e[0m"
+echo -e "\e[1;34m[*] Settings saved to $SYSCTL_FILE.\e[0m"
+echo -e "\e[1;34m[*] Logs are saved to /var/log/autotune-sysctl.log.\e[0m"
+echo -e "\e[1;34m[*] The script will run every 8 hours.\e[0m"
+echo -e "\e[1;34m[*] For manual execution: sudo $INSTALL_PATH\e[0m"
 
 exit 0
