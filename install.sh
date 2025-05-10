@@ -502,7 +502,7 @@ After=network.target
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=24h
+OnUnitActiveSec=8h
 AccuracySec=1m
 RandomizedDelaySec=30s
 Unit=autotune-sysctl.service
