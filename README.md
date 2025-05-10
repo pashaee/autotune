@@ -15,37 +15,11 @@
 - **اجرای زمان‌بندی شده**: اعمال مجدد تنظیمات به صورت دوره‌ای
 - **پشتیبان‌گیری**: ایجاد پشتیبان از تنظیمات قبلی برای امکان بازگشت
 
-### پیش‌نیازها
-اسکریپت به صورت خودکار پیش‌نیازهای زیر را بررسی و در صورت نیاز نصب می‌کند:
-- `ethtool`: برای تنظیمات پیشرفته کارت شبکه
-- `iproute2` (tc): برای مدیریت ترافیک شبکه
-
-### نصب
-
-```bash
-# دانلود اسکریپت
-wget https://raw.githubusercontent.com/YOUR_USERNAME/autotune-sysctl/main/install.sh -O install-autotune.sh
-
-# اعطای مجوز اجرا
-chmod +x install-autotune.sh
-
-# اجرا با دسترسی روت
-sudo ./install-autotune.sh
-```
-
-یا به صورت یکجا:
-
-```bash
-curl -s https://raw.githubusercontent.com/YOUR_USERNAME/autotune-sysctl/main/install.sh | sudo bash
-```
+bash <(curl -Ls https://raw.githubusercontent.com/pashaee/autotune/main/install.sh)
 
 ### استفاده
 
-پس از نصب، اسکریپت به صورت خودکار اجرا می‌شود و هر ۲۴ ساعت یکبار تنظیمات را بروزرسانی می‌کند. برای اجرای دستی:
-
-```bash
-sudo /usr/local/bin/autotune-sysctl.sh
-```
+پس از نصب، اسکریپت به صورت خودکار اجرا می‌شود و هر ۲۴ ساعت یکبار تنظیمات را بروزرسانی می‌کند.
 
 ### گزارش‌ها و پیکربندی
 - تنظیمات در مسیر `/etc/sysctl.d/99-autotune.conf` ذخیره می‌شوند
@@ -104,29 +78,13 @@ The script automatically checks for and installs the following prerequisites if 
 ### Installation
 
 ```bash
-# Download the script
-wget https://raw.githubusercontent.com/YOUR_USERNAME/autotune-sysctl/main/install.sh -O install-autotune.sh
+bash <(curl -Ls https://raw.githubusercontent.com/pashaee/autotune/main/install.sh)
 
-# Make it executable
-chmod +x install-autotune.sh
-
-# Run with root privileges
-sudo ./install-autotune.sh
-```
-
-Or as a one-liner:
-
-```bash
-curl -s https://raw.githubusercontent.com/YOUR_USERNAME/autotune-sysctl/main/install.sh | sudo bash
 ```
 
 ### Usage
 
-After installation, the script runs automatically and updates settings every 24 hours. For manual execution:
-
-```bash
-sudo /usr/local/bin/autotune-sysctl.sh
-```
+After installation, the script runs automatically and updates settings every 24 hours.
 
 ### Logs and Configuration
 - Settings are stored in `/etc/sysctl.d/99-autotune.conf`
