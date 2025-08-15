@@ -1,245 +1,325 @@
 #!/bin/bash
 
-# Optimized autotune-sysctl script
-# Automatically adjusts system parameters for maximum network and system performance
-# Version: 2.0 - Optimized
+#Optimized autotune-sysctl script
+#Automatically adjusts system parameters for maximum network and system performance
 
-set -euo pipefail
+set -e
 
-# Global variables
-readonly INSTALL_PATH="/usr/local/bin/autotune-sysctl.sh"
-readonly SERVICE_PATH="/etc/systemd/system/autotune-sysctl.service"
-readonly TIMER_PATH="/etc/systemd/system/autotune-sysctl.timer"
-readonly SYSCTL_FILE="/etc/sysctl.d/99-autotune.conf"
-readonly BACKUP_FILE="/etc/sysctl.d/99-autotune.bak"
-readonly LOG_FILE="/var/log/autotune-sysctl.log"
-readonly MODULES_FILE="/etc/modules-load.d/autotune.conf"
+echo -e "\e[1;34m[*] Installing script autotune-sysctl...\e[0m"
 
-# Color codes
-readonly RED='\e[1;31m'
-readonly GREEN='\e[1;32m'
-readonly YELLOW='\e[1;33m'
-readonly BLUE='\e[1;34m'
-readonly NC='\e[0m'
+INSTALL_PATH="/usr/local/bin/autotune-sysctl.sh"
+SERVICE_PATH="/etc/systemd/system/autotune-sysctl.service"
+TIMER_PATH="/etc/systemd/system/autotune-sysctl.timer"
+SYSCTL_FILE="/etc/sysctl.d/99-autotune.conf"
 
-# System info cache
-declare -g TOTAL_MEM_KB TOTAL_MEM_MB CPU_CORES DEFAULT_IFACE NETWORK_SPEED DISK_TYPE
+# root access check
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "\e[1;31m[ERROR] This script must be run with root privileges.\e[0m"
+    exit 1
+fi
 
-# Logging function
-log() {
-    local level="$1"
-    shift
-    local color=""
-    case "$level" in
-        ERROR) color="$RED" ;;
-        SUCCESS) color="$GREEN" ;;
-        WARNING) color="$YELLOW" ;;
-        INFO) color="$BLUE" ;;
-    esac
-    echo -e "${color}[$level]${NC} $*" | tee -a "$LOG_FILE" 2>/dev/null || echo -e "${color}[$level]${NC} $*"
-}
 
-# Error handler
-error_exit() {
-    log ERROR "$1"
-    exit "${2:-1}"
-}
+echo -e "\e[1;34m[*] Checking required tools...\e[0m"
 
-# Check root privileges
-check_root() {
-    [[ $EUID -eq 0 ]] || error_exit "This script must be run with root privileges."
-}
 
-# Detect package manager
-detect_package_manager() {
-    local managers=(
-        "apt-get:apt-get install -y"
-        "dnf:dnf install -y"
-        "yum:yum install -y"
-        "pacman:pacman -S --noconfirm"
-        "zypper:zypper install -y"
-    )
-    
-    for manager in "${managers[@]}"; do
-        local cmd="${manager%:*}"
-        local install_cmd="${manager#*:}"
-        if command -v "$cmd" &>/dev/null; then
-            echo "$install_cmd"
-            return 0
+if command -v apt-get >/dev/null 2>&1; then
+    PKG_MANAGER="apt-get"
+    PKG_INSTALL="apt-get install -y"
+elif command -v yum >/dev/null 2>&1; then
+    PKG_MANAGER="yum"
+    PKG_INSTALL="yum install -y"
+elif command -v dnf >/dev/null 2>&1; then
+    PKG_MANAGER="dnf"
+    PKG_INSTALL="dnf install -y"
+elif command -v pacman >/dev/null 2>&1; then
+    PKG_MANAGER="pacman"
+    PKG_INSTALL="pacman -S --noconfirm"
+elif command -v zypper >/dev/null 2>&1; then
+    PKG_MANAGER="zypper"
+    PKG_INSTALL="zypper install -y"
+else
+    echo -e "\e[1;33m[!!!] Package manager not detected. Automatic installation of tools is not possible.\e[0m"
+    PKG_MANAGER=""
+    PKG_INSTALL=""
+fi
+
+# installing ethtool
+if ! command -v ethtool >/dev/null 2>&1; then
+    echo -e "\e[1;33m[WARNING] ethtool is not installed, attempting to install...\e[0m"
+    if [ -n "$PKG_MANAGER" ]; then
+        $PKG_INSTALL ethtool
+        if command -v ethtool >/dev/null 2>&1; then
+            echo -e "\e[1;32m[✓] ethtool was successfully installed.\e[0m"
+        else
+            echo -e "\e[1;31m[ERROR] Failed to install ethtool.\e[0m"
         fi
-    done
-    
-    return 1
-}
-
-# Install package if not present
-install_if_missing() {
-    local package="$1"
-    local command_name="${2:-$package}"
-    
-    if command -v "$command_name" &>/dev/null; then
-        log SUCCESS "$command_name is already installed"
-        return 0
     fi
-    
-    log WARNING "$command_name not found, attempting installation..."
-    
-    local install_cmd
-    if ! install_cmd=$(detect_package_manager); then
-        log WARNING "No supported package manager found"
+else
+    echo -e "\e[1;32m[✓] ethtool is installed.\e[0m"
+fi
+
+# Check and install iproute2 (for tc)
+if ! command -v tc >/dev/null 2>&1; then
+    echo -e "\e[1;33m[WARNING] tc (from iproute2 package) is not installed, attempting to install...\e[0m"
+    if [ -n "$PKG_MANAGER" ]; then
+        if [ "$PKG_MANAGER" = "apt-get" ] || [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
+            $PKG_INSTALL iproute2
+        elif [ "$PKG_MANAGER" = "pacman" ]; then
+            $PKG_INSTALL iproute2
+        elif [ "$PKG_MANAGER" = "zypper" ]; then
+            $PKG_INSTALL iproute2
+        fi
+        
+        if command -v tc >/dev/null 2>&1; then
+            echo -e "\e[1;32m[✓] tc was successfully installed.\e[0m"
+        else
+            echo -e "\e[1;31m[ERROR] Failed to install tc.\e[0m"
+        fi
+    fi
+else
+    echo -e "\e[1;32m[✓] tc is installed.\e[0m"
+fi
+
+# Create main configuration file
+cat <<'EOF' > "$INSTALL_PATH"
+#!/bin/bash
+
+# Set path variables
+SYSCTL_FILE="/etc/sysctl.d/99-autotune.conf"
+BACKUP_FILE="/etc/sysctl.d/99-autotune.bak"
+LOG_FILE="/var/log/autotune-sysctl.log"
+
+# Check and install required tools
+check_and_install_tools() {
+    # Detect package management system
+    if command -v apt-get >/dev/null 2>&1; then
+        PKG_MANAGER="apt-get"
+        PKG_INSTALL="apt-get install -y"
+    elif command -v yum >/dev/null 2>&1; then
+        PKG_MANAGER="yum"
+        PKG_INSTALL="yum install -y"
+    elif command -v dnf >/dev/null 2>&1; then
+        PKG_MANAGER="dnf"
+        PKG_INSTALL="dnf install -y"
+    elif command -v pacman >/dev/null 2>&1; then
+        PKG_MANAGER="pacman"
+        PKG_INSTALL="pacman -S --noconfirm"
+    elif command -v zypper >/dev/null 2>&1; then
+        PKG_MANAGER="zypper"
+        PKG_INSTALL="zypper install -y"
+    else
+        echo "[WARNING] Package manager not detected. Automatic installation of tools is not possible."
         return 1
     fi
-    
-    if $install_cmd "$package"; then
-        log SUCCESS "$package installed successfully"
-    else
-        log ERROR "Failed to install $package"
-        return 1
-    fi
-}
 
-# Gather system information efficiently
-gather_system_info() {
-    log INFO "Gathering system information..."
-    
-    # Memory info
-    TOTAL_MEM_KB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
-    TOTAL_MEM_MB=$((TOTAL_MEM_KB / 1024))
-    
-    # CPU cores
-    CPU_CORES=$(nproc)
-    
-    # Default network interface
-    DEFAULT_IFACE=$(ip route show default 2>/dev/null | awk 'NR==1 {print $5}')
-    
-    # Network speed detection
-    NETWORK_SPEED=1000  # Default
-    if [[ -n "$DEFAULT_IFACE" && -f "/sys/class/net/$DEFAULT_IFACE/speed" ]]; then
-        local detected_speed
-        if detected_speed=$(cat "/sys/class/net/$DEFAULT_IFACE/speed" 2>/dev/null) && [[ $detected_speed -gt 0 ]]; then
-            NETWORK_SPEED=$detected_speed
+    # Check and install ethtool
+    if ! command -v ethtool >/dev/null 2>&1; then
+        echo "[WARNING] ethtool is not installed, attempting to install..."
+        $PKG_INSTALL ethtool
+        if ! command -v ethtool >/dev/null 2>&1; then
+            echo "[ERROR] Failed to install ethtool."
+        else
+            echo "[✓] ethtool was successfully installed."
+        fi
+    fi
+
+    # Check and install iproute2 (for tc)
+    if ! command -v tc >/dev/null 2>&1; then
+        echo "[WARNING] tc (from iproute2 package) is not installed, attempting to install..."
+        if [ "$PKG_MANAGER" = "apt-get" ] || [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "zypper" ]; then
+            $PKG_INSTALL iproute2
+        elif [ "$PKG_MANAGER" = "pacman" ]; then
+            $PKG_INSTALL iproute2
+        fi
+        
+        if ! command -v tc >/dev/null 2>&1; then
+            echo "[ERROR] Failed to install tc."
+        else
+            echo "[✓] tc was successfully installed."
         fi
     fi
     
-    # Disk type detection
-    DISK_TYPE="HDD"  # Default
-    local root_device
-    root_device=$(lsblk -no pkname "$(df --output=source / | tail -n1)" 2>/dev/null)
-    if [[ -n "$root_device" && -f "/sys/block/$root_device/queue/rotational" ]]; then
-        [[ $(cat "/sys/block/$root_device/queue/rotational") -eq 0 ]] && DISK_TYPE="SSD"
-    fi
-    
-    log INFO "System specs: ${TOTAL_MEM_MB}MB RAM, ${CPU_CORES} cores, ${DEFAULT_IFACE:-unknown} interface, ${NETWORK_SPEED}Mbps, $DISK_TYPE storage"
+    return 0
 }
 
-# Calculate optimized values based on system specs
-calculate_values() {
-    local rmem_max wmem_max tcp_mem ip_conntrack_max nr_open file_max inotify_max min_free_kb
-    local netdev_max_backlog somaxconn swappiness vfs_cache_pressure dirty_ratio dirty_bg_ratio max_map_count
-    
-    # Memory-based scaling
-    case $TOTAL_MEM_MB in
-        [0-2048])
-            rmem_max=4194304 wmem_max=4194304 tcp_mem="196608 262144 393216"
-            ip_conntrack_max=$((TOTAL_MEM_MB * 32)) nr_open=524288 file_max=524288
-            inotify_max=65536 min_free_kb=32768 ;;
-        [2049-4096])
-            rmem_max=8388608 wmem_max=8388608 tcp_mem="393216 524288 786432"
-            ip_conntrack_max=$((TOTAL_MEM_MB * 48)) nr_open=1048576 file_max=1048576
-            inotify_max=131072 min_free_kb=49152 ;;
-        [4097-8192])
-            rmem_max=16777216 wmem_max=16777216 tcp_mem="786432 1048576 1572864"
-            ip_conntrack_max=$((TOTAL_MEM_MB * 64)) nr_open=2097152 file_max=2097152
-            inotify_max=262144 min_free_kb=65536 ;;
-        [8193-16384])
-            rmem_max=33554432 wmem_max=33554432 tcp_mem="1572864 2097152 3145728"
-            ip_conntrack_max=$((TOTAL_MEM_MB * 96)) nr_open=3097152 file_max=3097152
-            inotify_max=524288 min_free_kb=98304 ;;
-        *)
-            rmem_max=67108864 wmem_max=67108864 tcp_mem="3145728 4194304 6291456"
-            ip_conntrack_max=$((TOTAL_MEM_MB * 128)) nr_open=4194304 file_max=4194304
-            inotify_max=1048576 min_free_kb=131072 ;;
-    esac
-    
-    # Network speed adjustments
-    if [[ $NETWORK_SPEED -ge 10000 ]]; then
-        [[ $TOTAL_MEM_MB -gt 16384 ]] && { rmem_max=134217728; wmem_max=134217728; } || { rmem_max=$((rmem_max * 2)); wmem_max=$((wmem_max * 2)); }
-        netdev_max_backlog=32768 somaxconn=32768
-    elif [[ $NETWORK_SPEED -ge 1000 ]]; then
-        netdev_max_backlog=8192 somaxconn=8192
-    else
-        netdev_max_backlog=2048 somaxconn=2048
-    fi
-    
-    # Disk type optimizations
-    if [[ "$DISK_TYPE" == "SSD" ]]; then
-        swappiness=1 vfs_cache_pressure=50 dirty_ratio=10 dirty_bg_ratio=5 max_map_count=1048576
-    else
-        swappiness=10 vfs_cache_pressure=100 dirty_ratio=20 dirty_bg_ratio=10 max_map_count=524288
-    fi
-    
-    # Export calculated values
-    export RMEM_MAX=$rmem_max WMEM_MAX=$wmem_max TCP_MEM="$tcp_mem" IP_CONNTRACK_MAX=$ip_conntrack_max
-    export NR_OPEN=$nr_open FILE_MAX=$file_max INOTIFY_MAX=$inotify_max MIN_FREE_KB=$min_free_kb
-    export NETDEV_MAX_BACKLOG=$netdev_max_backlog SOMAXCONN=$somaxconn
-    export SWAPPINESS=$swappiness VFS_CACHE_PRESSURE=$vfs_cache_pressure
-    export DIRTY_RATIO=$dirty_ratio DIRTY_BG_RATIO=$dirty_bg_ratio MAX_MAP_COUNT=$max_map_count
-}
+# Check and install tools
+check_and_install_tools
 
-# Detect optimal congestion control and qdisc
-detect_network_algorithms() {
-    local congestion="cubic" qdisc="pfifo_fast"
-    
-    # Congestion control detection
-    if [[ -f /proc/sys/net/ipv4/tcp_available_congestion_control ]]; then
-        local available
-        available=$(cat /proc/sys/net/ipv4/tcp_available_congestion_control)
-        case "$available" in
-            *bbr2*) congestion="bbr2" ;;
-            *bbr*) congestion="bbr" ;;
-        esac
-    fi
-    
-    # Queue discipline detection
-    local qdiscs=("fq_codel" "fq")
-    for qd in "${qdiscs[@]}"; do
-        if modprobe "sch_$qd" 2>/dev/null || lsmod | grep -q "sch_$qd"; then
-            qdisc="$qd"
-            break
+# Create log file
+exec > >(tee -a "${LOG_FILE}") 2>&1
+echo "--- $(date): Running autotune-sysctl ---"
+
+# Backup previous settings
+if [ -f "$SYSCTL_FILE" ]; then
+    cp "$SYSCTL_FILE" "$BACKUP_FILE"
+    echo "[*] Previous settings backed up to: $BACKUP_FILE"
+fi
+
+# Collect system information
+TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+TOTAL_MEM_MB=$((TOTAL_MEM_KB / 1024))
+CPU_CORES=$(nproc)
+DEFAULT_IFACE=$(ip route | awk '/default/ {print $5}' | head -n 1)
+NETWORK_SPEED=1000  # Default: 1Gbps
+DISK_TYPE="HDD"     # Default: HDD
+
+# Detect disk type (SSD or HDD)
+if [ -d "/sys/block" ]; then
+    ROOT_DEVICE=$(df / | awk 'NR==2 {print $1}' | sed 's/\/dev\///' | sed 's/[0-9]*$//')
+    if [ -n "$ROOT_DEVICE" ] && [ -d "/sys/block/$ROOT_DEVICE" ]; then
+        if grep -q "0" "/sys/block/$ROOT_DEVICE/queue/rotational" 2>/dev/null; then
+            DISK_TYPE="SSD"
         fi
-    done
-    
-    export CONGESTION="$congestion" QDISC="$qdisc"
-    log INFO "Using congestion control: $congestion, queue discipline: $qdisc"
-}
-
-# Load required kernel modules
-load_modules() {
-    local modules=("tcp_bbr" "sch_fq_codel" "sch_fq" "nf_conntrack")
-    local loaded=()
-    
-    for module in "${modules[@]}"; do
-        if modprobe "$module" 2>/dev/null; then
-            loaded+=("$module")
-        fi
-    done
-    
-    if [[ ${#loaded[@]} -gt 0 ]]; then
-        printf '%s\n' "${loaded[@]}" > "$MODULES_FILE"
-        log SUCCESS "Loaded modules: ${loaded[*]}"
     fi
-}
+fi
 
-# Generate optimized sysctl configuration
-generate_sysctl_config() {
-    [[ -f "$SYSCTL_FILE" ]] && cp "$SYSCTL_FILE" "$BACKUP_FILE"
-    
-    cat > "$SYSCTL_FILE" << EOF
-# Optimized Linux kernel settings - Generated $(date)
+# Detect network speed
+if [ -n "$DEFAULT_IFACE" ] && [ -d "/sys/class/net/$DEFAULT_IFACE" ]; then
+    if [ -f "/sys/class/net/$DEFAULT_IFACE/speed" ]; then
+        DETECTED_SPEED=$(cat "/sys/class/net/$DEFAULT_IFACE/speed" 2>/dev/null || echo 1000)
+        if [ "$DETECTED_SPEED" -gt 0 ]; then
+            NETWORK_SPEED=$DETECTED_SPEED
+        fi
+    fi
+fi
 
-# Network Performance
+echo "[*] System Information:"
+echo "    - Total Memory: $TOTAL_MEM_MB MB"
+echo "    - CPU Cores: $CPU_CORES"
+echo "    - Default Network Interface: $DEFAULT_IFACE"
+echo "    - Network Speed: $NETWORK_SPEED Mbps"
+echo "    - Disk Type: $DISK_TYPE"
+
+# Configure values based on system memory
+if [ "$TOTAL_MEM_MB" -le 2048 ]; then
+    # Low memory system (≤ 2GB)
+    RMEM_MAX=4194304           # ~4MB
+    WMEM_MAX=4194304           # ~4MB
+    TCP_MEM="196608 262144 393216"
+    IP_CONNTRACK_MAX=$((TOTAL_MEM_MB * 32))
+    NR_OPEN=524288
+    FILE_MAX=524288
+    INOTIFY_MAX=65536
+    MIN_FREE_KB=32768
+elif [ "$TOTAL_MEM_MB" -le 4096 ]; then
+    # Medium memory system (≤ 4GB)
+    RMEM_MAX=8388608           # ~8MB
+    WMEM_MAX=8388608           # ~8MB
+    TCP_MEM="393216 524288 786432"
+    IP_CONNTRACK_MAX=$((TOTAL_MEM_MB * 48))
+    NR_OPEN=1048576
+    FILE_MAX=1048576
+    INOTIFY_MAX=131072
+    MIN_FREE_KB=49152
+elif [ "$TOTAL_MEM_MB" -le 8192 ]; then
+    # High memory system (≤ 8GB)
+    RMEM_MAX=16777216          # ~16MB
+    WMEM_MAX=16777216          # ~16MB
+    TCP_MEM="786432 1048576 1572864"
+    IP_CONNTRACK_MAX=$((TOTAL_MEM_MB * 64))
+    NR_OPEN=2097152
+    FILE_MAX=2097152
+    INOTIFY_MAX=262144
+    MIN_FREE_KB=65536
+elif [ "$TOTAL_MEM_MB" -le 16384 ]; then
+    # Very high memory system (≤ 16GB)
+    RMEM_MAX=33554432          # ~32MB
+    WMEM_MAX=33554432          # ~32MB
+    TCP_MEM="1572864 2097152 3145728"
+    IP_CONNTRACK_MAX=$((TOTAL_MEM_MB * 96))
+    NR_OPEN=3097152
+    FILE_MAX=3097152
+    INOTIFY_MAX=524288
+    MIN_FREE_KB=98304
+else
+    # Extremely high memory system (> 16GB)
+    RMEM_MAX=67108864          # ~64MB
+    WMEM_MAX=67108864          # ~64MB
+    TCP_MEM="3145728 4194304 6291456"
+    IP_CONNTRACK_MAX=$((TOTAL_MEM_MB * 128))
+    NR_OPEN=4194304
+    FILE_MAX=4194304
+    INOTIFY_MAX=1048576
+    MIN_FREE_KB=131072
+fi
+
+# Configure based on network speed
+if [ "$NETWORK_SPEED" -ge 10000 ]; then
+    # 10Gbps network or higher
+    if [ "$TOTAL_MEM_MB" -gt 16384 ]; then
+        RMEM_MAX=134217728     # ~128MB
+        WMEM_MAX=134217728     # ~128MB
+        NETDEV_MAX_BACKLOG=32768
+        SOMAXCONN=32768
+    else
+        RMEM_MAX=$((RMEM_MAX * 2))
+        WMEM_MAX=$((WMEM_MAX * 2))
+        NETDEV_MAX_BACKLOG=16384
+        SOMAXCONN=16384
+    fi
+elif [ "$NETWORK_SPEED" -ge 1000 ]; then
+    # 1Gbps network
+    NETDEV_MAX_BACKLOG=8192
+    SOMAXCONN=8192
+else
+    # Less than 1Gbps network
+    NETDEV_MAX_BACKLOG=2048
+    SOMAXCONN=2048
+fi
+
+# Configure queue algorithm and congestion control
+QDISC="fq_codel"
+CONGESTION="bbr"
+if ! grep -q "bbr" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+    echo "[*] BBR is not available, using cubic instead"
+    CONGESTION="cubic"
+elif grep -q "bbr2" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+    echo "[*] BBR2 is available, using bbr2 instead of bbr"
+    CONGESTION="bbr2"
+fi
+
+# Check fq_codel support
+if ! tc qdisc show 2>/dev/null | grep -q "fq_codel"; then
+    if modprobe sch_fq_codel 2>/dev/null; then
+        echo "[*] fq_codel module loaded successfully"
+    else
+        echo "[*] fq_codel is not supported, using fq instead"
+        QDISC="fq"
+        if ! tc qdisc show 2>/dev/null | grep -q "fq"; then
+            if ! modprobe sch_fq 2>/dev/null; then
+                echo "[*] fq is also not supported, using default"
+                QDISC="pfifo_fast"
+            fi
+        fi
+    fi
+fi
+
+# Disk type optimization
+if [ "$DISK_TYPE" = "SSD" ]; then
+    SWAPPINESS=1
+    VFS_CACHE_PRESSURE=50
+    DIRTY_RATIO=10
+    DIRTY_BACKGROUND_RATIO=5
+    MAX_MAP_COUNT=1048576
+else
+    SWAPPINESS=10
+    VFS_CACHE_PRESSURE=100
+    DIRTY_RATIO=20
+    DIRTY_BACKGROUND_RATIO=10
+    MAX_MAP_COUNT=524288
+fi
+
+# Create system configuration file
+cat <<EOT > "$SYSCTL_FILE"
+# Optimized Linux kernel settings
+# Created on: $(date)
+
+# --- Network Settings ---
+# Queue and congestion control
 net.core.default_qdisc=$QDISC
 net.ipv4.tcp_congestion_control=$CONGESTION
+
+# Send and receive buffers
 net.core.rmem_max=$RMEM_MAX
 net.core.wmem_max=$WMEM_MAX
 net.core.rmem_default=$((RMEM_MAX / 4))
@@ -247,198 +327,219 @@ net.core.wmem_default=$((WMEM_MAX / 4))
 net.ipv4.tcp_rmem=4096 87380 $RMEM_MAX
 net.ipv4.tcp_wmem=4096 87380 $WMEM_MAX
 net.ipv4.tcp_mem=$TCP_MEM
-net.core.somaxconn=$SOMAXCONN
-net.core.netdev_max_backlog=$NETDEV_MAX_BACKLOG
+net.ipv4.udp_rmem_min=8192
+net.ipv4.udp_wmem_min=8192
 
-# TCP Optimization
-net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_slow_start_after_idle=0
-net.ipv4.tcp_mtu_probing=1
-net.ipv4.tcp_window_scaling=1
-net.ipv4.tcp_timestamps=1
-net.ipv4.tcp_sack=1
-net.ipv4.tcp_fin_timeout=10
+# TCP connection optimization
 net.ipv4.tcp_keepalive_time=60
 net.ipv4.tcp_keepalive_intvl=10
 net.ipv4.tcp_keepalive_probes=6
+net.ipv4.tcp_fin_timeout=10
 net.ipv4.tcp_max_syn_backlog=$((SOMAXCONN * 2))
 net.ipv4.tcp_max_tw_buckets=$((SOMAXCONN * 4))
 net.ipv4.tcp_tw_reuse=1
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_slow_start_after_idle=0
+net.ipv4.tcp_mtu_probing=1
+net.ipv4.tcp_timestamps=1
+net.ipv4.tcp_window_scaling=1
+net.ipv4.tcp_sack=1
+net.ipv4.tcp_dsack=1
+net.ipv4.tcp_syn_retries=3
+net.ipv4.tcp_synack_retries=2
 net.ipv4.tcp_syncookies=1
 net.ipv4.tcp_ecn=1
+
+# Increase local port range
 net.ipv4.ip_local_port_range=1024 65535
 
-# Security & Connection Tracking
+# Other network settings
+net.core.somaxconn=$SOMAXCONN
+net.core.netdev_max_backlog=$NETDEV_MAX_BACKLOG
+net.ipv4.tcp_moderate_rcvbuf=1
+net.ipv4.tcp_adv_win_scale=-2
+net.ipv4.route.gc_timeout=100
 net.ipv4.conf.all.rp_filter=1
+net.ipv4.conf.default.rp_filter=1
 net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.default.accept_redirects=0
 net.ipv4.conf.all.secure_redirects=0
+net.ipv4.conf.default.secure_redirects=0
+
+# Connection tracking settings
 net.netfilter.nf_conntrack_max=$IP_CONNTRACK_MAX
 net.netfilter.nf_conntrack_tcp_timeout_established=86400
+net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
 
-# Filesystem & Memory Management
+# --- Filesystem and Memory Settings ---
+fs.inotify.max_user_watches=$INOTIFY_MAX
+fs.inotify.max_user_instances=1024
 fs.file-max=$FILE_MAX
 fs.nr_open=$NR_OPEN
-fs.inotify.max_user_watches=$INOTIFY_MAX
+fs.suid_dumpable=0
+fs.protected_hardlinks=1
+fs.protected_symlinks=1
+
+# Virtual memory settings
 vm.swappiness=$SWAPPINESS
 vm.vfs_cache_pressure=$VFS_CACHE_PRESSURE
 vm.dirty_ratio=$DIRTY_RATIO
-vm.dirty_background_ratio=$DIRTY_BG_RATIO
+vm.dirty_background_ratio=$DIRTY_BACKGROUND_RATIO
 vm.min_free_kbytes=$MIN_FREE_KB
 vm.max_map_count=$MAX_MAP_COUNT
 vm.overcommit_memory=1
+vm.overcommit_ratio=50
+vm.page-cluster=3
+vm.dirty_expire_centisecs=3000
+vm.dirty_writeback_centisecs=500
 
-# Kernel Performance
+# --- Kernel and Security Settings ---
 kernel.sched_autogroup_enabled=1
 kernel.sched_migration_cost_ns=5000000
-kernel.pid_max=65536
+kernel.sched_latency_ns=10000000
+kernel.sched_min_granularity_ns=4000000
 kernel.panic=10
+kernel.pid_max=65536
+kernel.threads-max=$((FILE_MAX / 4))
+kernel.sysrq=1
 kernel.randomize_va_space=2
-EOF
-    
-    log SUCCESS "Configuration file generated: $SYSCTL_FILE"
-}
 
-# Apply system settings
-apply_settings() {
-    if ! sysctl --system; then
-        log ERROR "Failed to apply settings"
-        if [[ -f "$BACKUP_FILE" ]]; then
-            mv "$BACKUP_FILE" "$SYSCTL_FILE"
-            sysctl --system
-            log INFO "Settings restored from backup"
+# System-specific settings
+kernel.sched_child_runs_first=0
+kernel.numa_balancing=0
+EOT
+
+# Apply the new settings
+if ! sysctl --system; then
+    echo -e "\e[1;31m[ERROR] Problem applying settings.\e[0m"
+    # Restore backup file in case of error
+    if [ -f "$BACKUP_FILE" ]; then
+        mv "$BACKUP_FILE" "$SYSCTL_FILE"
+        sysctl --system
+        echo "[*] Settings restored to previous state."
+    fi
+    exit 1
+fi
+
+# Apply specific settings for current network interface
+if [ -n "$DEFAULT_IFACE" ]; then
+    echo "[*] Setting parameters for network interface $DEFAULT_IFACE"
+    
+    # Increase ring buffer for network card
+    if [ -d "/sys/class/net/$DEFAULT_IFACE/queues" ]; then
+        RX_QUEUES=$(ls -1 /sys/class/net/$DEFAULT_IFACE/queues/ | grep "rx-" | wc -l)
+        if [ "$RX_QUEUES" -gt 0 ]; then
+            echo "[*] Setting $RX_QUEUES receive queues"
+            if [ "$NETWORK_SPEED" -ge 10000 ]; then
+                RX_RING=4096
+            elif [ "$NETWORK_SPEED" -ge 1000 ]; then
+                RX_RING=2048
+            else
+                RX_RING=1024
+            fi
+            
+            # Try to set ring size
+            if ethtool -g "$DEFAULT_IFACE" &>/dev/null; then
+                MAX_RING=$(ethtool -g "$DEFAULT_IFACE" 2>/dev/null | grep "RX:" -A 1 | tail -1 | awk '{print $1}')
+                if [ -n "$MAX_RING" ] && [ "$MAX_RING" -gt 0 ]; then
+                    if [ "$RX_RING" -gt "$MAX_RING" ]; then
+                        RX_RING=$MAX_RING
+                    fi
+                    ethtool -G "$DEFAULT_IFACE" rx "$RX_RING" &>/dev/null && \
+                        echo "[*] $DEFAULT_IFACE receive ring size set to $RX_RING" || \
+                        echo "[*] Error setting receive ring size"
+                fi
+            fi
         fi
-        return 1
     fi
-    log SUCCESS "System settings applied successfully"
-}
+    
+    # Check and set TSO and LRO
+    if ethtool -k "$DEFAULT_IFACE" &>/dev/null; then
+        echo "[*] Optimizing transfer offload"
+        # Enable offload capabilities
+        ethtool -K "$DEFAULT_IFACE" tso on gso on gro on sg on rx on tx on &>/dev/null || true
+    fi
+    
+    # Set queue rules for network interface
+    if tc qdisc show dev "$DEFAULT_IFACE" &>/dev/null; then
+        echo "[*] Setting queue policy for $DEFAULT_IFACE to $QDISC"
+        tc qdisc replace dev "$DEFAULT_IFACE" root "$QDISC" &>/dev/null || \
+            echo "[*] Error setting queue policy"
+    fi
+    
+    # MTU setting removed as requested
+fi
 
-# Optimize network interface
-optimize_network_interface() {
-    [[ -z "$DEFAULT_IFACE" ]] && return 0
-    
-    log INFO "Optimizing network interface: $DEFAULT_IFACE"
-    
-    # Set ring buffer size
-    if command -v ethtool &>/dev/null && ethtool -g "$DEFAULT_IFACE" &>/dev/null; then
-        local ring_size=1024
-        [[ $NETWORK_SPEED -ge 10000 ]] && ring_size=4096
-        [[ $NETWORK_SPEED -ge 1000 ]] && ring_size=2048
-        
-        local max_ring
-        max_ring=$(ethtool -g "$DEFAULT_IFACE" 2>/dev/null | awk '/^RX:/{getline; print $1}')
-        [[ -n "$max_ring" && $ring_size -gt $max_ring ]] && ring_size=$max_ring
-        
-        ethtool -G "$DEFAULT_IFACE" rx "$ring_size" &>/dev/null && 
-            log SUCCESS "Ring buffer set to $ring_size"
-    fi
-    
-    # Enable hardware offloading
-    if command -v ethtool &>/dev/null; then
-        ethtool -K "$DEFAULT_IFACE" tso on gso on gro on sg on rx on tx on &>/dev/null &&
-            log SUCCESS "Hardware offloading enabled"
-    fi
-    
-    # Set queue discipline
-    if command -v tc &>/dev/null; then
-        tc qdisc replace dev "$DEFAULT_IFACE" root "$QDISC" &>/dev/null &&
-            log SUCCESS "Queue discipline set to $QDISC"
-    fi
-}
+echo -e "\e[1;32m[✓] System settings have been successfully optimized.\e[0m"
+exit 0
+EOF
 
-# Create systemd service and timer
-create_systemd_files() {
-    # Service file
-    cat > "$SERVICE_PATH" << EOF
+chmod +x "$INSTALL_PATH"
+
+# Create systemd service
+cat <<EOF > "$SERVICE_PATH"
 [Unit]
 Description=Auto-tune sysctl parameters
-After=network-online.target
-Wants=network-online.target
+After=network.target
 
 [Service]
 Type=oneshot
 ExecStart=$INSTALL_PATH
-TimeoutStartSec=180
+TimeoutStartSec=300
 KillMode=process
 Restart=on-failure
-RestartSec=30
+RestartSec=60
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Timer file
-    cat > "$TIMER_PATH" << EOF
+# Create systemd timer
+cat <<EOF > "$TIMER_PATH"
 [Unit]
 Description=Run autotune-sysctl periodically
-After=network-online.target
+After=network.target
 
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=8h
-AccuracySec=1min
+AccuracySec=1m
 RandomizedDelaySec=30s
+Unit=autotune-sysctl.service
 
 [Install]
 WantedBy=timers.target
 EOF
-    
-    log SUCCESS "Systemd service and timer created"
-}
 
-# Main installation function
-install_autotune() {
-    log INFO "Installing autotune-sysctl..."
-    
-    check_root
-    install_if_missing "ethtool"
-    install_if_missing "iproute2" "tc"
-    
-    # Create the main script
-    cat > "$INSTALL_PATH" << 'SCRIPT_EOF'
-#!/bin/bash
-set -euo pipefail
-
-# [The optimized main script content would go here - same structure as above]
-# This is a placeholder for the actual script content
-# In practice, you would embed the optimized version here
-
-SCRIPT_EOF
-    chmod +x "$INSTALL_PATH"
-    
-    gather_system_info
-    calculate_values
-    detect_network_algorithms
-    load_modules
-    generate_sysctl_config
-    apply_settings
-    optimize_network_interface
-    create_systemd_files
-    
-    # Enable and start services
-    systemctl daemon-reload
-    systemctl enable autotune-sysctl.service autotune-sysctl.timer
-    systemctl start autotune-sysctl.timer
-    
-    log SUCCESS "Installation completed successfully!"
-    log INFO "Configuration: $SYSCTL_FILE"
-    log INFO "Logs: $LOG_FILE"
-    log INFO "Manual run: sudo $INSTALL_PATH"
-}
-
-# Main execution
-main() {
-    # If script is being installed
-    if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-        install_autotune
-    else
-        # If script is being run as the installed version
-        gather_system_info
-        calculate_values
-        detect_network_algorithms
-        generate_sysctl_config
-        apply_settings
-        optimize_network_interface
+# Install required drivers and modules
+echo -e "\e[1;34m[*] Checking and installing required modules...\e[0m"
+for MODULE in tcp_bbr sch_fq_codel sch_fq nf_conntrack; do
+    if ! lsmod | grep -q "$MODULE"; then
+        echo "[*] Loading module $MODULE"
+        modprobe "$MODULE" 2>/dev/null || echo "[!] Module $MODULE is not available"
     fi
-}
+done
 
-main "$@"
+# Register modules to be loaded at boot
+if [ ! -f "/etc/modules-load.d/autotune.conf" ]; then
+    echo -e "# Required modules for autotune-sysctl\ntcp_bbr\nsch_fq_codel\nsch_fq\nnf_conntrack" > "/etc/modules-load.d/autotune.conf"
+    echo "[*] Required modules added to boot configuration file"
+fi
+
+# Reload system configuration
+systemctl daemon-reload
+
+# Enable services
+echo -e "\e[1;34m[*] Enabling service and timer...\e[0m"
+systemctl enable autotune-sysctl.service
+systemctl enable autotune-sysctl.timer
+systemctl start autotune-sysctl.service
+systemctl start autotune-sysctl.timer
+
+echo -e "\e[1;32m[✓] Installation and configuration of autotune-sysctl completed successfully.\e[0m"
+echo -e "\e[1;34m[*] Settings saved to $SYSCTL_FILE.\e[0m"
+echo -e "\e[1;34m[*] Logs are saved to /var/log/autotune-sysctl.log.\e[0m"
+echo -e "\e[1;34m[*] The script will run every 8 hours.\e[0m"
+echo -e "\e[1;34m[*] For manual execution: sudo $INSTALL_PATH\e[0m"
+
+exit 0
