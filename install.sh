@@ -11,6 +11,7 @@ INSTALL_PATH="/usr/local/bin/autotune-sysctl.sh"
 SERVICE_PATH="/etc/systemd/system/autotune-sysctl.service"
 TIMER_PATH="/etc/systemd/system/autotune-sysctl.timer"
 SYSCTL_FILE="/etc/sysctl.d/99-autotune.conf"
+CRON_FILE="/etc/cron.d/autotune-sysctl"
 
 # root access check
 if [ "$(id -u)" -ne 0 ]; then
@@ -34,6 +35,9 @@ elif command -v dnf >/dev/null 2>&1; then
 elif command -v pacman >/dev/null 2>&1; then
     PKG_MANAGER="pacman"
     PKG_INSTALL="pacman -S --noconfirm"
+elif command -v apk >/dev/null 2>&1; then
+    PKG_MANAGER="apk"
+    PKG_INSTALL="apk add --no-cache"
 elif command -v zypper >/dev/null 2>&1; then
     PKG_MANAGER="zypper"
     PKG_INSTALL="zypper install -y"
@@ -62,14 +66,10 @@ fi
 if ! command -v tc >/dev/null 2>&1; then
     echo -e "\e[1;33m[WARNING] tc (from iproute2 package) is not installed, attempting to install...\e[0m"
     if [ -n "$PKG_MANAGER" ]; then
-        if [ "$PKG_MANAGER" = "apt-get" ] || [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
-            $PKG_INSTALL iproute2
-        elif [ "$PKG_MANAGER" = "pacman" ]; then
-            $PKG_INSTALL iproute2
-        elif [ "$PKG_MANAGER" = "zypper" ]; then
+        if [ "$PKG_MANAGER" = "apt-get" ] || [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "pacman" ] || [ "$PKG_MANAGER" = "zypper" ] || [ "$PKG_MANAGER" = "apk" ]; then
             $PKG_INSTALL iproute2
         fi
-        
+
         if command -v tc >/dev/null 2>&1; then
             echo -e "\e[1;32m[✓] tc was successfully installed.\e[0m"
         else
@@ -104,6 +104,9 @@ check_and_install_tools() {
     elif command -v pacman >/dev/null 2>&1; then
         PKG_MANAGER="pacman"
         PKG_INSTALL="pacman -S --noconfirm"
+    elif command -v apk >/dev/null 2>&1; then
+        PKG_MANAGER="apk"
+        PKG_INSTALL="apk add --no-cache"
     elif command -v zypper >/dev/null 2>&1; then
         PKG_MANAGER="zypper"
         PKG_INSTALL="zypper install -y"
@@ -126,12 +129,10 @@ check_and_install_tools() {
     # Check and install iproute2 (for tc)
     if ! command -v tc >/dev/null 2>&1; then
         echo "[WARNING] tc (from iproute2 package) is not installed, attempting to install..."
-        if [ "$PKG_MANAGER" = "apt-get" ] || [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "zypper" ]; then
-            $PKG_INSTALL iproute2
-        elif [ "$PKG_MANAGER" = "pacman" ]; then
+        if [ "$PKG_MANAGER" = "apt-get" ] || [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "zypper" ] || [ "$PKG_MANAGER" = "pacman" ] || [ "$PKG_MANAGER" = "apk" ]; then
             $PKG_INSTALL iproute2
         fi
-        
+
         if ! command -v tc >/dev/null 2>&1; then
             echo "[ERROR] Failed to install tc."
         else
@@ -476,8 +477,10 @@ EOF
 
 chmod +x "$INSTALL_PATH"
 
-# Create systemd service
-cat <<EOF > "$SERVICE_PATH"
+# Create service or scheduling mechanism
+if command -v systemctl >/dev/null 2>&1; then
+    # systemd service
+    cat <<EOF > "$SERVICE_PATH"
 [Unit]
 Description=Auto-tune sysctl parameters
 After=network.target
@@ -494,8 +497,8 @@ RestartSec=60
 WantedBy=multi-user.target
 EOF
 
-# Create systemd timer
-cat <<EOF > "$TIMER_PATH"
+    # systemd timer
+    cat <<EOF > "$TIMER_PATH"
 [Unit]
 Description=Run autotune-sysctl periodically
 After=network.target
@@ -510,6 +513,7 @@ Unit=autotune-sysctl.service
 [Install]
 WantedBy=timers.target
 EOF
+fi
 
 # Install required drivers and modules
 echo -e "\e[1;34m[*] Checking and installing required modules...\e[0m"
@@ -526,20 +530,29 @@ if [ ! -f "/etc/modules-load.d/autotune.conf" ]; then
     echo "[*] Required modules added to boot configuration file"
 fi
 
-# Reload system configuration
-systemctl daemon-reload
+# Setup scheduling mechanism
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload
 
-# Enable services
-echo -e "\e[1;34m[*] Enabling service and timer...\e[0m"
-systemctl enable autotune-sysctl.service
-systemctl enable autotune-sysctl.timer
-systemctl start autotune-sysctl.service
-systemctl start autotune-sysctl.timer
+    echo -e "\e[1;34m[*] Enabling service and timer...\e[0m"
+    systemctl enable autotune-sysctl.service
+    systemctl enable autotune-sysctl.timer
+    systemctl start autotune-sysctl.service
+    systemctl start autotune-sysctl.timer
+    echo -e "\e[1;34m[*] The script will run every 8 hours via systemd timer.\e[0m"
+else
+    echo -e "\e[1;34m[*] Setting up cron job...\e[0m"
+    echo "0 */8 * * * root $INSTALL_PATH" > "$CRON_FILE"
+    chmod 644 "$CRON_FILE"
+    if command -v service >/dev/null 2>&1; then
+        service cron reload 2>/dev/null || service crond reload 2>/dev/null || true
+    fi
+    echo -e "\e[1;34m[*] The script will run every 8 hours via cron.\e[0m"
+fi
 
 echo -e "\e[1;32m[✓] Installation and configuration of autotune-sysctl completed successfully.\e[0m"
 echo -e "\e[1;34m[*] Settings saved to $SYSCTL_FILE.\e[0m"
 echo -e "\e[1;34m[*] Logs are saved to /var/log/autotune-sysctl.log.\e[0m"
-echo -e "\e[1;34m[*] The script will run every 8 hours.\e[0m"
 echo -e "\e[1;34m[*] For manual execution: sudo $INSTALL_PATH\e[0m"
 
 exit 0
