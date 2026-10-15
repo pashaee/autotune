@@ -1,79 +1,84 @@
-# AutoTune-Sysctl
+ ---
 
-<div dir="rtl">
+# Xray-Linux-Autotune
 
 ## فارسی
 
 ### معرفی
-اسکریپت `autotune-sysctl` یک ابزار قدرتمند برای بهینه‌سازی خودکار پارامترهای هسته لینوکس است. این اسکریپت تنظیمات سیستم را برای دستیابی به حداکثر کارایی در زمینه‌های شبکه، مدیریت حافظه و عملکرد کلی سیستم بهینه می‌کند.
+
+اسکریپت `Xray-Linux-Autotune` یک ابزار پیشرفته و تخصصی برای بهینه‌سازی خودکار پارامترهای هسته لینوکس و کارت شبکه است. این اسکریپت به طور ویژه برای سرورهای VPN با هسته **Xray / V2Ray** (با تمرکز روی ترافیک سنگین **Instagram، HTTP/3، QUIC و UDP**) و مدیریت همزمان **۱۰۰ تا ۴۰۰+ کاربر** طراحی شده است تا با کمترین مصرف پردازنده (CPU)، بالاترین پایداری و سرعت را ارائه دهد.
 
 ### ویژگی‌ها
-- **بهینه‌سازی هوشمند**: پیکربندی خودکار بر اساس مشخصات سخت‌افزاری
-- **تنظیمات شبکه**: بهبود عملکرد TCP/IP با تنظیمات پیشرفته بافر و پارامترهای کنترل ازدحام
-- **بهینه‌سازی حافظه**: تنظیم پارامترهای حافظه مجازی و سیستم فایل
-- **تشخیص خودکار**: شناسایی نوع دیسک (SSD/HDD) و سرعت شبکه
-- **اجرای زمان‌بندی شده**: اعمال مجدد تنظیمات به صورت دوره‌ای
-- **پشتیبان‌گیری**: ایجاد پشتیبان از تنظیمات قبلی برای امکان بازگشت
+
+* **تخصیص هوشمند بر اساس منابع**: تنظیم خودکار بافرهای TCP/UDP و صف‌های شبکه بر اساس میزان رم و تعداد هسته‌های پردازنده سرور
+* **بهینه‌سازی تخصصی ترافیک اینستاگرام و QUIC**: افزایش بافرهای UDP، غیرسازی Slow Start پس از وقفه، و تنظیمات انعطاف‌پذیر برای مقابله با پکت‌لاس و پینگ بالا
+* **مدیریت پیشرفته پردازنده (RPS / RFS)**: توزیع خودکار بار پردازش بسته‌های شبکه روی تمام هسته‌های CPU (جلوگیری از درگیری تک‌هسته)
+* **فعال‌سازی BBR و صف FQ**: استفاده از الگوریتم BBR همراه با صف `fq` برای کاهش تأخیر و کاهش چشمگیر بار پردازنده
+* **مدیریت هوشمند فایروال**: عدم فعال‌سازی اجباری ماژول `nf_conntrack` برای ذخیره ۱۵ الی ۲۵ درصد مصرف CPU (و تنظیم خودکار آن تنها در صورت فعال بودن پیش‌فرض توسط سیستم یا داکر)
+* **بدون قطعی‌های دوره‌ای**: برخلاف اسکریپت‌های قدیمی، این ابزار به صورت **Boot-Once** اجرا می‌شود و کارت شبکه را حین کار کاربران ریست نمی‌کند.
+* **افزایش سقف فایل‌های باز**: تنظیم خودکار `ulimit` و محدودیت‌های سیستمی روی `524288` برای پشتیبانی بی‌проблеم از هزاران کانکشن موازی
+
+### نصب و راه‌اندازی
+
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/pashaee/autotune/main/install.sh)
+
 ```
-### استفاده
 
-پس از نصب، اسکریپت به صورت خودکار اجرا می‌شود و هر ۲۴ ساعت یکبار تنظیمات را بروزرسانی می‌کند.
+### نحوه عملکرد
 
-### گزارش‌ها و پیکربندی
-- تنظیمات در مسیر `/etc/sysctl.d/99-autotune.conf` ذخیره می‌شوند
-- گزارش‌ها در فایل `/var/log/autotune-sysctl.log` ثبت می‌شوند
-- فایل پشتیبان با نام `/etc/sysctl.d/99-autotune.bak` ایجاد می‌شود
+* پس از نصب، اسکریپت به صورت یک سرویس سیستمی (`xray-autotune.service`) ثبت می‌شود و در هر بار روشن‌شدن مجدد سرور (Boot)، تنظیمات را اعمال می‌کند.
 
-### حذف
+### گزارش‌ها و فایل‌های پیکربندی
+
+* **فایل تنظیمات کرنل**: `/etc/sysctl.d/99-xray-autotune.conf`
+* **گزارش‌های اجرایی**: `/var/log/xray-autotune.log`
+* **محدودیت فایل‌های باز**: `/etc/security/limits.d/99-xray-nofile.conf`
+
+### نحوه حذف (Uninstallation)
 
 ```bash
-# غیرفعال کردن و حذف سرویس و تایمر
-sudo systemctl disable --now autotune-sysctl.service
-sudo systemctl disable --now autotune-sysctl.timer
-sudo rm /etc/systemd/system/autotune-sysctl.service
-sudo rm /etc/systemd/system/autotune-sysctl.timer
+# غیرفعال کردن و حذف سرویس سیستمی
+sudo systemctl disable --now xray-autotune.service
+sudo rm /etc/systemd/system/xray-autotune.service
 
 # حذف فایل‌های اسکریپت و پیکربندی
-sudo rm /usr/local/bin/autotune-sysctl.sh
-sudo rm /etc/sysctl.d/99-autotune.conf
-sudo rm /var/log/autotune-sysctl.log
+sudo rm /usr/local/bin/xray-autotune.sh
+sudo rm /etc/sysctl.d/99-xray-autotune.conf
+sudo rm /etc/security/limits.d/99-xray-nofile.conf
+sudo rm /var/log/xray-autotune.log
 
-# اعمال تنظیمات پیش‌فرض سیستم
+# بازنشانی تنظیمات سیستم
 sudo sysctl --system
+
 ```
 
 ### توصیه‌های استفاده
-- این اسکریپت برای محیط‌های مختلف از جمله سرورها، سیستم‌های دسکتاپ و VPS‌ها مناسب است
-- برای سرورهای با ترافیک بالا و سیستم‌های با منابع زیاد بیشترین تأثیر را دارد
-- تنظیمات اعمال شده در فایل `/etc/sysctl.d/99-autotune.conf` قابل بررسی و تغییر دستی هستند
 
-### توجه
-- همیشه توصیه می‌شود قبل از اجرا در محیط تولید، اسکریپت را در محیط تست بررسی کنید
-- در صورت بروز مشکل، فایل پشتیبان امکان بازگشت به تنظیمات قبلی را فراهم می‌کند
+* این اسکریپت بهینه‌سازی ایده‌آلی برای سرورهای خارج از ایران میزبان پنل‌های مدیریت Xray (مانند 3x-ui) با تعداد کاربران بالا است.
+* تنظیمات اعمال‌شده کاملاً ایمن بوده و در فایل‌های ذکر شده قابل بازبینی و شخصی‌سازی هستند.
 
 ### مجوز
 
-</div>
+MIT License
+
+---
 
 ## English
 
 ### Introduction
-The `autotune-sysctl` script is a powerful tool for automatically optimizing Linux kernel parameters. It fine-tunes system settings to achieve maximum performance in networking, memory management, and overall system performance.
+
+The `Xray-Linux-Autotune` script is an advanced, specialized tool designed to automatically optimize Linux kernel and network interface parameters. It is specifically tailored for high-concurrency **Xray / V2Ray VPN servers** (handling **100 to 400+ simultaneous users** with heavy **Instagram, HTTP/3, QUIC, and UDP** traffic profiles), ensuring maximum network throughput while keeping CPU overhead to an absolute minimum.
 
 ### Features
-- **Smart Optimization**: Automatic configuration based on hardware specifications
-- **Network Tuning**: Enhanced TCP/IP performance with advanced buffer and congestion control parameters
-- **Memory Optimization**: Virtual memory and filesystem parameter tuning
-- **Automatic Detection**: Identification of disk type (SSD/HDD) and network speed
-- **Scheduled Execution**: Periodic reapplication of settings
-- **Backup**: Creation of backups for previous settings to enable rollback
 
-### Prerequisites
-The script automatically checks for and installs the following prerequisites if needed:
-- `ethtool`: For advanced network card settings
-- `iproute2` (tc): For network traffic management
+* **Smart Hardware-Based Tuning**: Automatically scales TCP/UDP buffers and network queues based on available RAM and CPU core counts.
+* **Instagram & QUIC Traffic Optimization**: Tuned UDP minimum buffers, disabled slow-start after idle, and high-latency mobile ISP resilience.
+* **Multi-Core CPU Distribution (RPS / RFS)**: Automatically calculates core bitmasks to distribute network packet processing evenly across all CPU cores.
+* **BBR & FQ Integration**: Enforces the BBR congestion control algorithm coupled with `fq` packet pacing to minimize CPU usage and packet drops.
+* **Zero-Overhead Firewall Policy**: Avoids forcing `nf_conntrack` on clean servers (saving 15-25% CPU overhead), while intelligently tuning it if Docker or firewalls are already present.
+* **Boot-Once Architecture**: Runs strictly at system startup as a oneshot service—eliminating periodic 8-hour disruptions or live interface resets.
+* **High-Concurrency File Limits**: Automatically raises system-wide file descriptors (`nofile`) to `524288` to seamlessly support tens of thousands of simultaneous TCP/UDP sockets.
 
 ### Installation
 
@@ -82,39 +87,39 @@ bash <(curl -Ls https://raw.githubusercontent.com/pashaee/autotune/main/install.
 
 ```
 
-### Usage
+### Usage & Behavior
 
-After installation, the script runs automatically and updates settings every 24 hours.
+* Upon installation, the script registers as a systemd service (`xray-autotune.service`) and automatically applies all optimizations securely during system boot.
 
-### Logs and Configuration
-- Settings are stored in `/etc/sysctl.d/99-autotune.conf`
-- Logs are written to `/var/log/autotune-sysctl.log`
-- Backup file is created as `/etc/sysctl.d/99-autotune.bak`
+### Logs and Configuration Paths
+
+* **Kernel Tunables**: `/etc/sysctl.d/99-xray-autotune.conf`
+* **Execution Logs**: `/var/log/xray-autotune.log`
+* **File Limits Config**: `/etc/security/limits.d/99-xray-nofile.conf`
 
 ### Uninstallation
 
 ```bash
-# Disable and remove service and timer
-sudo systemctl disable --now autotune-sysctl.service
-sudo systemctl disable --now autotune-sysctl.timer
-sudo rm /etc/systemd/system/autotune-sysctl.service
-sudo rm /etc/systemd/system/autotune-sysctl.timer
+# Disable and remove the systemd service
+sudo systemctl disable --now xray-autotune.service
+sudo rm /etc/systemd/system/xray-autotune.service
 
 # Remove script and configuration files
-sudo rm /usr/local/bin/autotune-sysctl.sh
-sudo rm /etc/sysctl.d/99-autotune.conf
-sudo rm /var/log/autotune-sysctl.log
+sudo rm /usr/local/bin/xray-autotune.sh
+sudo rm /etc/sysctl.d/99-xray-autotune.conf
+sudo rm /etc/security/limits.d/99-xray-nofile.conf
+sudo rm /var/log/xray-autotune.log
 
-# Apply default system settings
+# Reload default kernel settings
 sudo sysctl --system
+
 ```
 
-### Usage Recommendations
-- This script is suitable for various environments including servers, desktop systems, and VPSs
-- It has the most impact on high-traffic servers and systems with substantial resources
-- The applied settings in `/etc/sysctl.d/99-autotune.conf` can be manually reviewed and modified
+### Recommendations
 
-### Note
-- It's always recommended to test the script in a non-production environment before deploying
-- In case of issues, the backup file allows for a rollback to previous settings
+* Ideal for remote VPS nodes running Xray/V2Ray panels (such as 3x-ui) serving heavy video/social media traffic.
+* All applied settings are fully transparent and open for manual review inside the configuration files.
 
+### License
+
+MIT License
