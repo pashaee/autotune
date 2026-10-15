@@ -1,558 +1,429 @@
 #!/bin/bash
 
-#Optimized autotune-sysctl script
-#Automatically adjusts system parameters for maximum network and system performance
+# ==============================================================================
+# Xray / V2Ray High-Concurrency Kernel & Network Optimizer
+# Optimized for: 100-400+ Concurrent Users | Instagram (HTTP/3, QUIC, UDP & TCP)
+# Target OS: Ubuntu / Debian / CentOS / AlmaLinux / Rocky / Arch / Alpine
+# ==============================================================================
 
 set -e
 
-echo -e "\e[1;34m[*] Installing script autotune-sysctl...\e[0m"
+INSTALL_PATH="/usr/local/bin/xray-autotune.sh"
+SERVICE_PATH="/etc/systemd/system/xray-autotune.service"
+SYSCTL_FILE="/etc/sysctl.d/99-xray-autotune.conf"
+LIMITS_FILE="/etc/security/limits.d/99-xray-nofile.conf"
 
-INSTALL_PATH="/usr/local/bin/autotune-sysctl.sh"
-SERVICE_PATH="/etc/systemd/system/autotune-sysctl.service"
-TIMER_PATH="/etc/systemd/system/autotune-sysctl.timer"
-SYSCTL_FILE="/etc/sysctl.d/99-autotune.conf"
-CRON_FILE="/etc/cron.d/autotune-sysctl"
-
-# root access check
+# 1. Root privilege check
 if [ "$(id -u)" -ne 0 ]; then
-    echo -e "\e[1;31m[ERROR] This script must be run with root privileges.\e[0m"
+    echo -e "\e[1;31m[ERROR] This script must be run as root.\e[0m"
     exit 1
 fi
 
+echo -e "\e[1;34m[*] Starting Xray/V2Ray Server Optimization Setup...\e[0m"
 
-echo -e "\e[1;34m[*] Checking required tools...\e[0m"
+# 2. Cleanup legacy/faulty 8-hour timers from previous script (if present)
+echo -e "\e[1;34m[*] Cleaning up any legacy 8-hour autotune timers and conflicting files...\e[0m"
+systemctl stop autotune-sysctl.timer autotune-sysctl.service 2>/dev/null || true
+systemctl disable autotune-sysctl.timer autotune-sysctl.service 2>/dev/null || true
+rm -f /etc/systemd/system/autotune-sysctl.timer \
+      /etc/systemd/system/autotune-sysctl.service \
+      /etc/cron.d/autotune-sysctl \
+      /usr/local/bin/autotune-sysctl.sh \
+      /etc/sysctl.d/99-autotune.conf \
+      /etc/sysctl.d/99-v2ray-optimize.conf \
+      /etc/modules-load.d/autotune.conf
 
+# Also disable duplicate network-rps service if created manually earlier
+systemctl stop network-rps.service 2>/dev/null || true
+systemctl disable network-rps.service 2>/dev/null || true
+rm -f /etc/systemd/system/network-rps.service
 
-if command -v apt-get >/dev/null 2>&1; then
-    PKG_MANAGER="apt-get"
-    PKG_INSTALL="apt-get install -y"
-elif command -v yum >/dev/null 2>&1; then
-    PKG_MANAGER="yum"
-    PKG_INSTALL="yum install -y"
-elif command -v dnf >/dev/null 2>&1; then
-    PKG_MANAGER="dnf"
-    PKG_INSTALL="dnf install -y"
-elif command -v pacman >/dev/null 2>&1; then
-    PKG_MANAGER="pacman"
-    PKG_INSTALL="pacman -S --noconfirm"
-elif command -v apk >/dev/null 2>&1; then
-    PKG_MANAGER="apk"
-    PKG_INSTALL="apk add --no-cache"
-elif command -v zypper >/dev/null 2>&1; then
-    PKG_MANAGER="zypper"
-    PKG_INSTALL="zypper install -y"
-else
-    echo -e "\e[1;33m[!!!] Package manager not detected. Automatic installation of tools is not possible.\e[0m"
-    PKG_MANAGER=""
-    PKG_INSTALL=""
-fi
+# 3. Install required network utilities ONCE during installation
+install_dependencies() {
+    local MISSING_PKGS=""
+    command -v ethtool >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS ethtool"
+    command -v tc >/dev/null 2>&1 || MISSING_PKGS="$MISSING_PKGS iproute2"
 
-# installing ethtool
-if ! command -v ethtool >/dev/null 2>&1; then
-    echo -e "\e[1;33m[WARNING] ethtool is not installed, attempting to install...\e[0m"
-    if [ -n "$PKG_MANAGER" ]; then
-        $PKG_INSTALL ethtool
-        if command -v ethtool >/dev/null 2>&1; then
-            echo -e "\e[1;32m[✓] ethtool was successfully installed.\e[0m"
+    if [ -n "$MISSING_PKGS" ]; then
+        echo -e "\e[1;33m[*] Installing required packages:$MISSING_PKGS...\e[0m"
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $MISSING_PKGS
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y -q $MISSING_PKGS
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y -q $MISSING_PKGS
+        elif command -v pacman >/dev/null 2>&1; then
+            pacman -Sy --noconfirm $MISSING_PKGS
+        elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache $MISSING_PKGS
+        elif command -v zypper >/dev/null 2>&1; then
+            zypper install -y $MISSING_PKGS
         else
-            echo -e "\e[1;31m[ERROR] Failed to install ethtool.\e[0m"
+            echo -e "\e[1;33m[!] Package manager not found. Please install$MISSING_PKGS manually.\e[0m"
         fi
     fi
-else
-    echo -e "\e[1;32m[✓] ethtool is installed.\e[0m"
-fi
+}
+install_dependencies
 
-# Check and install iproute2 (for tc)
-if ! command -v tc >/dev/null 2>&1; then
-    echo -e "\e[1;33m[WARNING] tc (from iproute2 package) is not installed, attempting to install...\e[0m"
-    if [ -n "$PKG_MANAGER" ]; then
-        if [ "$PKG_MANAGER" = "apt-get" ] || [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "pacman" ] || [ "$PKG_MANAGER" = "zypper" ] || [ "$PKG_MANAGER" = "apk" ]; then
-            $PKG_INSTALL iproute2
-        fi
+# 4. Load ONLY essential congestion/queue modules (Strictly NO nf_conntrack!)
+echo -e "\e[1;34m[*] Configuring kernel modules (BBR & FQ)...\e[0m"
+modprobe tcp_bbr 2>/dev/null || true
+modprobe sch_fq 2>/dev/null || true
 
-        if command -v tc >/dev/null 2>&1; then
-            echo -e "\e[1;32m[✓] tc was successfully installed.\e[0m"
-        else
-            echo -e "\e[1;31m[ERROR] Failed to install tc.\e[0m"
+cat << 'EOF' > /etc/modules-load.d/xray-autotune.conf
+tcp_bbr
+sch_fq
+EOF
+
+# 5. Ensure safety Swap exists (2GB) if system has 0 Swap
+TOTAL_SWAP_KB=$(grep SwapTotal /proc/meminfo | awk '{print $2}')
+if [ "${TOTAL_SWAP_KB:-0}" -eq 0 ]; then
+    AVAIL_DISK_GB=$(df -BG / | awk 'NR==2 {gsub("G","",$4); print $4}')
+    if [ "${AVAIL_DISK_GB:-0}" -ge 5 ]; then
+        echo -e "\e[1;34m[*] No swap detected. Creating a 2GB safety swapfile...\e[0m"
+        if [ ! -f /swapfile ]; then
+            fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+            chmod 600 /swapfile
+            mkswap /swapfile >/dev/null
+            swapon /swapfile
+            if ! grep -q "/swapfile" /etc/fstab; then
+                echo '/swapfile none swap sw 0 0' >> /etc/fstab
+            fi
+            echo -e "\e[1;32m[✓] 2GB Swap created and activated.\e[0m"
         fi
     fi
-else
-    echo -e "\e[1;32m[✓] tc is installed.\e[0m"
 fi
 
-# Create main configuration file
-cat <<'EOF' > "$INSTALL_PATH"
+# 6. Configure system-wide Open Files Limits (ulimit & systemd)
+echo -e "\e[1;34m[*] Applying system-wide file descriptor limits (524288)...\e[0m"
+mkdir -p /etc/security/limits.d
+cat << 'EOF' > "$LIMITS_FILE"
+* soft nofile 524288
+* hard nofile 524288
+* soft nproc 65535
+* hard nproc 65535
+root soft nofile 524288
+root hard nofile 524288
+root soft nproc 65535
+root hard nproc 65535
+EOF
+
+if [ -f /etc/pam.d/common-session ] && ! grep -q "pam_limits.so" /etc/pam.d/common-session; then
+    echo "session required pam_limits.so" >> /etc/pam.d/common-session
+fi
+
+if [ -f /etc/systemd/system.conf ]; then
+    sed -i 's/^#*DefaultLimitNOFILE=.*/DefaultLimitNOFILE=524288/g' /etc/systemd/system.conf
+    if ! grep -q "^DefaultLimitNOFILE=" /etc/systemd/system.conf; then
+        echo "DefaultLimitNOFILE=524288" >> /etc/systemd/system.conf
+    fi
+    systemctl daemon-reexec 2>/dev/null || true
+fi
+
+# 7. Create the main boot/runtime optimization script
+cat << 'EOF' > "$INSTALL_PATH"
 #!/bin/bash
 
-# Set path variables
-SYSCTL_FILE="/etc/sysctl.d/99-autotune.conf"
-BACKUP_FILE="/etc/sysctl.d/99-autotune.bak"
-LOG_FILE="/var/log/autotune-sysctl.log"
+SYSCTL_FILE="/etc/sysctl.d/99-xray-autotune.conf"
+LOG_FILE="/var/log/xray-autotune.log"
 
-# Check and install required tools
-check_and_install_tools() {
-    # Detect package management system
-    if command -v apt-get >/dev/null 2>&1; then
-        PKG_MANAGER="apt-get"
-        PKG_INSTALL="apt-get install -y"
-    elif command -v yum >/dev/null 2>&1; then
-        PKG_MANAGER="yum"
-        PKG_INSTALL="yum install -y"
-    elif command -v dnf >/dev/null 2>&1; then
-        PKG_MANAGER="dnf"
-        PKG_INSTALL="dnf install -y"
-    elif command -v pacman >/dev/null 2>&1; then
-        PKG_MANAGER="pacman"
-        PKG_INSTALL="pacman -S --noconfirm"
-    elif command -v apk >/dev/null 2>&1; then
-        PKG_MANAGER="apk"
-        PKG_INSTALL="apk add --no-cache"
-    elif command -v zypper >/dev/null 2>&1; then
-        PKG_MANAGER="zypper"
-        PKG_INSTALL="zypper install -y"
-    else
-        echo "[WARNING] Package manager not detected. Automatic installation of tools is not possible."
-        return 1
-    fi
-
-    # Check and install ethtool
-    if ! command -v ethtool >/dev/null 2>&1; then
-        echo "[WARNING] ethtool is not installed, attempting to install..."
-        $PKG_INSTALL ethtool
-        if ! command -v ethtool >/dev/null 2>&1; then
-            echo "[ERROR] Failed to install ethtool."
-        else
-            echo "[✓] ethtool was successfully installed."
-        fi
-    fi
-
-    # Check and install iproute2 (for tc)
-    if ! command -v tc >/dev/null 2>&1; then
-        echo "[WARNING] tc (from iproute2 package) is not installed, attempting to install..."
-        if [ "$PKG_MANAGER" = "apt-get" ] || [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "zypper" ] || [ "$PKG_MANAGER" = "pacman" ] || [ "$PKG_MANAGER" = "apk" ]; then
-            $PKG_INSTALL iproute2
-        fi
-
-        if ! command -v tc >/dev/null 2>&1; then
-            echo "[ERROR] Failed to install tc."
-        else
-            echo "[✓] tc was successfully installed."
-        fi
-    fi
-    
-    return 0
-}
-
-# Check and install tools
-check_and_install_tools
-
-# Create log file
 exec > >(tee -a "${LOG_FILE}") 2>&1
-echo "--- $(date): Running autotune-sysctl ---"
+echo "============================================================"
+echo "--- $(date): Running Xray Kernel & Hardware Auto-Tuner ---"
 
-# Backup previous settings
-if [ -f "$SYSCTL_FILE" ]; then
-    cp "$SYSCTL_FILE" "$BACKUP_FILE"
-    echo "[*] Previous settings backed up to: $BACKUP_FILE"
-fi
-
-# Collect system information
+# Gather hardware metrics
 TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
 TOTAL_MEM_MB=$((TOTAL_MEM_KB / 1024))
-CPU_CORES=$(nproc)
-DEFAULT_IFACE=$(ip route | awk '/default/ {print $5}' | head -n 1)
-NETWORK_SPEED=1000  # Default: 1Gbps
-DISK_TYPE="HDD"     # Default: HDD
+CPU_CORES=$(nproc 2>/dev/null || echo 2)
+DEFAULT_IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk -- '{printf $5}' | head -n 1)
+[ -z "$DEFAULT_IFACE" ] && DEFAULT_IFACE=$(ip route | awk '/default/ {print $5}' | head -n 1)
 
-# Detect disk type (SSD or HDD)
-if [ -d "/sys/block" ]; then
-    ROOT_DEVICE=$(df / | awk 'NR==2 {print $1}' | sed 's/\/dev\///' | sed 's/[0-9]*$//')
-    if [ -n "$ROOT_DEVICE" ] && [ -d "/sys/block/$ROOT_DEVICE" ]; then
-        if grep -q "0" "/sys/block/$ROOT_DEVICE/queue/rotational" 2>/dev/null; then
-            DISK_TYPE="SSD"
-        fi
-    fi
-fi
-
-# Detect network speed
-if [ -n "$DEFAULT_IFACE" ] && [ -d "/sys/class/net/$DEFAULT_IFACE" ]; then
-    if [ -f "/sys/class/net/$DEFAULT_IFACE/speed" ]; then
-        DETECTED_SPEED=$(cat "/sys/class/net/$DEFAULT_IFACE/speed" 2>/dev/null || echo 1000)
-        if [ "$DETECTED_SPEED" -gt 0 ]; then
-            NETWORK_SPEED=$DETECTED_SPEED
-        fi
-    fi
-fi
-
-echo "[*] System Information:"
-echo "    - Total Memory: $TOTAL_MEM_MB MB"
-echo "    - CPU Cores: $CPU_CORES"
-echo "    - Default Network Interface: $DEFAULT_IFACE"
-echo "    - Network Speed: $NETWORK_SPEED Mbps"
-echo "    - Disk Type: $DISK_TYPE"
-
-# Configure values based on system memory
+# Scale network buffers & file limits based on RAM
 if [ "$TOTAL_MEM_MB" -le 2048 ]; then
-    # Low memory system (≤ 2GB)
-    RMEM_MAX=4194304           # ~4MB
-    WMEM_MAX=4194304           # ~4MB
+    # <= 2GB RAM (100-150 concurrent users)
+    RMEM_MAX=8388608           # 8 MB
+    WMEM_MAX=8388608           # 8 MB
     TCP_MEM="196608 262144 393216"
-    IP_CONNTRACK_MAX=$((TOTAL_MEM_MB * 32))
-    NR_OPEN=524288
+    UDP_MEM="196608 262144 393216"
+    SOMAXCONN=32768
+    BACKLOG=32768
+    TW_BUCKETS=32768
     FILE_MAX=524288
-    INOTIFY_MAX=65536
     MIN_FREE_KB=32768
 elif [ "$TOTAL_MEM_MB" -le 4096 ]; then
-    # Medium memory system (≤ 4GB)
-    RMEM_MAX=8388608           # ~8MB
-    WMEM_MAX=8388608           # ~8MB
+    # 2GB - 4GB RAM (150-250 concurrent users)
+    RMEM_MAX=16777216          # 16 MB
+    WMEM_MAX=16777216          # 16 MB
     TCP_MEM="393216 524288 786432"
-    IP_CONNTRACK_MAX=$((TOTAL_MEM_MB * 48))
-    NR_OPEN=1048576
+    UDP_MEM="393216 524288 786432"
+    SOMAXCONN=49152
+    BACKLOG=49152
+    TW_BUCKETS=49152
     FILE_MAX=1048576
-    INOTIFY_MAX=131072
     MIN_FREE_KB=49152
 elif [ "$TOTAL_MEM_MB" -le 8192 ]; then
-    # High memory system (≤ 8GB)
-    RMEM_MAX=16777216          # ~16MB
-    WMEM_MAX=16777216          # ~16MB
+    # 4GB - 8GB RAM (250-400+ concurrent users)
+    RMEM_MAX=33554432          # 32 MB
+    WMEM_MAX=33554432          # 32 MB
     TCP_MEM="786432 1048576 1572864"
-    IP_CONNTRACK_MAX=$((TOTAL_MEM_MB * 64))
-    NR_OPEN=2097152
+    UDP_MEM="786432 1048576 1572864"
+    SOMAXCONN=65535
+    BACKLOG=65535
+    TW_BUCKETS=65536
     FILE_MAX=2097152
-    INOTIFY_MAX=262144
     MIN_FREE_KB=65536
-elif [ "$TOTAL_MEM_MB" -le 16384 ]; then
-    # Very high memory system (≤ 16GB)
-    RMEM_MAX=33554432          # ~32MB
-    WMEM_MAX=33554432          # ~32MB
+else
+    # > 8GB RAM (400+ heavy concurrent users)
+    RMEM_MAX=67108864          # 64 MB
+    WMEM_MAX=67108864          # 64 MB
     TCP_MEM="1572864 2097152 3145728"
-    IP_CONNTRACK_MAX=$((TOTAL_MEM_MB * 96))
-    NR_OPEN=3097152
-    FILE_MAX=3097152
-    INOTIFY_MAX=524288
-    MIN_FREE_KB=98304
-else
-    # Extremely high memory system (> 16GB)
-    RMEM_MAX=67108864          # ~64MB
-    WMEM_MAX=67108864          # ~64MB
-    TCP_MEM="3145728 4194304 6291456"
-    IP_CONNTRACK_MAX=$((TOTAL_MEM_MB * 128))
-    NR_OPEN=4194304
+    UDP_MEM="1572864 2097152 3145728"
+    SOMAXCONN=65535
+    BACKLOG=65535
+    TW_BUCKETS=65536
     FILE_MAX=4194304
-    INOTIFY_MAX=1048576
-    MIN_FREE_KB=131072
+    MIN_FREE_KB=98304
 fi
 
-# Configure based on network speed
-if [ "$NETWORK_SPEED" -ge 10000 ]; then
-    # 10Gbps network or higher
-    if [ "$TOTAL_MEM_MB" -gt 16384 ]; then
-        RMEM_MAX=134217728     # ~128MB
-        WMEM_MAX=134217728     # ~128MB
-        NETDEV_MAX_BACKLOG=32768
-        SOMAXCONN=32768
-    else
-        RMEM_MAX=$((RMEM_MAX * 2))
-        WMEM_MAX=$((WMEM_MAX * 2))
-        NETDEV_MAX_BACKLOG=16384
-        SOMAXCONN=16384
-    fi
-elif [ "$NETWORK_SPEED" -ge 1000 ]; then
-    # 1Gbps network
-    NETDEV_MAX_BACKLOG=8192
-    SOMAXCONN=8192
-else
-    # Less than 1Gbps network
-    NETDEV_MAX_BACKLOG=2048
-    SOMAXCONN=2048
+# Strictly prioritize 'fq' for BBR pacing (reduces CPU overhead & packet drops)
+QDISC="fq"
+if ! modprobe sch_fq 2>/dev/null && ! grep -q "fq" /proc/net/psched 2>/dev/null; then
+    QDISC="fq_codel"
 fi
 
-# Configure queue algorithm and congestion control
-QDISC="fq_codel"
 CONGESTION="bbr"
 if ! grep -q "bbr" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
-    echo "[*] BBR is not available, using cubic instead"
     CONGESTION="cubic"
-elif grep -q "bbr2" /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
-    echo "[*] BBR2 is available, using bbr2 instead of bbr"
-    CONGESTION="bbr2"
 fi
 
-# Check fq_codel support
-if ! tc qdisc show 2>/dev/null | grep -q "fq_codel"; then
-    if modprobe sch_fq_codel 2>/dev/null; then
-        echo "[*] fq_codel module loaded successfully"
-    else
-        echo "[*] fq_codel is not supported, using fq instead"
-        QDISC="fq"
-        if ! tc qdisc show 2>/dev/null | grep -q "fq"; then
-            if ! modprobe sch_fq 2>/dev/null; then
-                echo "[*] fq is also not supported, using default"
-                QDISC="pfifo_fast"
-            fi
-        fi
-    fi
-fi
+echo "[*] Detected Hardware: ${TOTAL_MEM_MB}MB RAM | ${CPU_CORES} CPU Cores | NIC: ${DEFAULT_IFACE}"
+echo "[*] Selected Profile: Congestion=${CONGESTION} | Qdisc=${QDISC} | MaxBuffer=$((RMEM_MAX/1048576))MB | Backlog=${BACKLOG}"
 
-# Disk type optimization
-if [ "$DISK_TYPE" = "SSD" ]; then
-    SWAPPINESS=1
-    VFS_CACHE_PRESSURE=50
-    DIRTY_RATIO=10
-    DIRTY_BACKGROUND_RATIO=5
-    MAX_MAP_COUNT=1048576
-else
-    SWAPPINESS=10
-    VFS_CACHE_PRESSURE=100
-    DIRTY_RATIO=20
-    DIRTY_BACKGROUND_RATIO=10
-    MAX_MAP_COUNT=524288
-fi
-
-# Create system configuration file
+# Write the sysctl configuration
 cat <<EOT > "$SYSCTL_FILE"
-# Optimized Linux kernel settings
-# Created on: $(date)
+# ==============================================================================
+# Xray / V2Ray High-Concurrency Kernel Profile (Instagram TCP/UDP/QUIC Tuned)
+# Generated on: $(date)
+# ==============================================================================
 
-# --- Network Settings ---
-# Queue and congestion control
-net.core.default_qdisc=$QDISC
-net.ipv4.tcp_congestion_control=$CONGESTION
+# 1. Congestion Control & Packet Pacing
+net.core.default_qdisc = $QDISC
+net.ipv4.tcp_congestion_control = $CONGESTION
 
-# Send and receive buffers
-net.core.rmem_max=$RMEM_MAX
-net.core.wmem_max=$WMEM_MAX
-net.core.rmem_default=$((RMEM_MAX / 4))
-net.core.wmem_default=$((WMEM_MAX / 4))
-net.ipv4.tcp_rmem=4096 87380 $RMEM_MAX
-net.ipv4.tcp_wmem=4096 87380 $WMEM_MAX
-net.ipv4.tcp_mem=$TCP_MEM
-net.ipv4.udp_rmem_min=8192
-net.ipv4.udp_wmem_min=8192
+# 2. File Descriptors & Socket Capacities
+fs.file-max = $FILE_MAX
+fs.nr_open = $FILE_MAX
+fs.inotify.max_user_watches = 262144
+fs.inotify.max_user_instances = 1024
 
-# TCP connection optimization
-net.ipv4.tcp_keepalive_time=60
-net.ipv4.tcp_keepalive_intvl=10
-net.ipv4.tcp_keepalive_probes=6
-net.ipv4.tcp_fin_timeout=10
-net.ipv4.tcp_max_syn_backlog=$((SOMAXCONN * 2))
-net.ipv4.tcp_max_tw_buckets=$((SOMAXCONN * 4))
-net.ipv4.tcp_tw_reuse=1
-net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_slow_start_after_idle=0
-net.ipv4.tcp_mtu_probing=1
-net.ipv4.tcp_timestamps=1
-net.ipv4.tcp_window_scaling=1
-net.ipv4.tcp_sack=1
-net.ipv4.tcp_dsack=1
-net.ipv4.tcp_syn_retries=3
-net.ipv4.tcp_synack_retries=2
-net.ipv4.tcp_syncookies=1
-net.ipv4.tcp_ecn=1
+# 3. High-Concurrency Listen & Network Queues
+net.core.somaxconn = $SOMAXCONN
+net.core.netdev_max_backlog = $BACKLOG
+net.ipv4.tcp_max_syn_backlog = $BACKLOG
+net.core.netdev_budget = 600
+net.core.netdev_budget_usecs = 8000
 
-# Increase local port range
-net.ipv4.ip_local_port_range=1024 65535
+# 4. TCP & UDP Socket Buffers (Tuned for Instagram Reels/Stories & QUIC bursts)
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.core.rmem_max = $RMEM_MAX
+net.core.wmem_max = $WMEM_MAX
+net.core.optmem_max = 65536
+net.ipv4.tcp_rmem = 4096 87380 $RMEM_MAX
+net.ipv4.tcp_wmem = 4096 65536 $WMEM_MAX
+net.ipv4.tcp_mem = $TCP_MEM
+net.ipv4.udp_mem = $UDP_MEM
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
 
-# Other network settings
-net.core.somaxconn=$SOMAXCONN
-net.core.netdev_max_backlog=$NETDEV_MAX_BACKLOG
-net.ipv4.tcp_moderate_rcvbuf=1
-net.ipv4.tcp_adv_win_scale=-2
-net.ipv4.route.gc_timeout=100
-net.ipv4.conf.all.rp_filter=1
-net.ipv4.conf.default.rp_filter=1
-net.ipv4.conf.all.accept_redirects=0
-net.ipv4.conf.default.accept_redirects=0
-net.ipv4.conf.all.secure_redirects=0
-net.ipv4.conf.default.secure_redirects=0
+# 5. TCP Connection Lifecycle (Fast recycling for CDN outbound connections)
+net.ipv4.ip_local_port_range = 1024 65535
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_max_tw_buckets = $TW_BUCKETS
+net.ipv4.tcp_max_orphans = 32768
 
-# Connection tracking settings
-net.netfilter.nf_conntrack_max=$IP_CONNTRACK_MAX
-net.netfilter.nf_conntrack_tcp_timeout_established=86400
-net.netfilter.nf_conntrack_tcp_timeout_time_wait=30
+# 6. Keepalive & Idle Optimization (Prevents speed drop between Instagram scrolls)
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 3
+net.ipv4.tcp_fastopen = 3
 
-# --- Filesystem and Memory Settings ---
-fs.inotify.max_user_watches=$INOTIFY_MAX
-fs.inotify.max_user_instances=1024
-fs.file-max=$FILE_MAX
-fs.nr_open=$NR_OPEN
-fs.suid_dumpable=0
-fs.protected_hardlinks=1
-fs.protected_symlinks=1
+# 7. High-Latency / Mobile ISP Resilience (Iran -> Server path)
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_ecn = 0
+net.ipv4.tcp_Window_scaling = 1
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_dsack = 1
+net.ipv4.tcp_syn_retries = 3
+net.ipv4.tcp_synack_retries = 2
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_moderate_rcvbuf = 1
 
-# Virtual memory settings
-vm.swappiness=$SWAPPINESS
-vm.vfs_cache_pressure=$VFS_CACHE_PRESSURE
-vm.dirty_ratio=$DIRTY_RATIO
-vm.dirty_background_ratio=$DIRTY_BACKGROUND_RATIO
-vm.min_free_kbytes=$MIN_FREE_KB
-vm.max_map_count=$MAX_MAP_COUNT
-vm.overcommit_memory=1
-vm.overcommit_ratio=50
-vm.page-cluster=3
-vm.dirty_expire_centisecs=3000
-vm.dirty_writeback_centisecs=500
+# 8. Memory & Swap Management (Protect CPU & Disk I/O)
+vm.swappiness = 10
+vm.vfs_cache_pressure = 50
+vm.dirty_ratio = 15
+vm.dirty_background_ratio = 5
+vm.min_free_kbytes = $MIN_FREE_KB
+vm.overcommit_memory = 0
+vm.max_map_count = 524288
 
-# --- Kernel and Security Settings ---
-kernel.sched_autogroup_enabled=1
-kernel.sched_migration_cost_ns=5000000
-kernel.sched_latency_ns=10000000
-kernel.sched_min_granularity_ns=4000000
-kernel.panic=10
-kernel.pid_max=65536
-kernel.threads-max=$((FILE_MAX / 4))
-kernel.sysrq=1
-kernel.randomize_va_space=2
-
-# System-specific settings
-kernel.sched_child_runs_first=0
-kernel.numa_balancing=0
+# 9. Security & Kernel Stability
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.conf.default.secure_redirects = 0
+kernel.panic = 10
+kernel.pid_max = 65536
 EOT
 
-# Apply the new settings
-if ! sysctl --system; then
-    echo -e "\e[1;31m[ERROR] Problem applying settings.\e[0m"
-    # Restore backup file in case of error
-    if [ -f "$BACKUP_FILE" ]; then
-        mv "$BACKUP_FILE" "$SYSCTL_FILE"
-        sysctl --system
-        echo "[*] Settings restored to previous state."
+# fixing window_scaling case typo safely
+sed -i 's/tcp_Window_scaling/tcp_window_scaling/g' "$SYSCTL_FILE"
+
+# 10. Conditional Conntrack Tuning (ONLY if nf_conntrack is ALREADY loaded by Docker/UFW)
+if [ -d "/proc/sys/net/netfilter" ]; then
+    CONNTRACK_MAX=$((TOTAL_MEM_MB * 64))
+    [ "$CONNTRACK_MAX" -lt 131072 ] && CONNTRACK_MAX=131072
+    echo "[*] Active nf_conntrack detected. Tuning conntrack table for UDP/QUIC..."
+    cat <<EOT >> "$SYSCTL_FILE"
+
+# 10. Conntrack Optimization (Active only because firewall/Docker is loaded)
+net.netfilter.nf_conntrack_max = $CONNTRACK_MAX
+net.netfilter.nf_conntrack_tcp_timeout_established = 7200
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
+net.netfilter.nf_conntrack_tcp_timeout_close_wait = 15
+net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 30
+net.netfilter.nf_conntrack_udp_timeout = 15
+net.netfilter.nf_conntrack_udp_timeout_stream = 60
+EOT
+    # Adjust hashsize dynamically to reduce CPU lookup time
+    if [ -w "/sys/module/nf_conntrack/parameters/hashsize" ]; then
+        echo $((CONNTRACK_MAX / 4)) > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null || true
     fi
-    exit 1
+else
+    echo "[✓] nf_conntrack is NOT active (Optimal: Saves 15-25% CPU overhead)."
 fi
 
-# Apply specific settings for current network interface
-if [ -n "$DEFAULT_IFACE" ]; then
-    echo "[*] Setting parameters for network interface $DEFAULT_IFACE"
-    
-    # Increase ring buffer for network card
-    if [ -d "/sys/class/net/$DEFAULT_IFACE/queues" ]; then
-        RX_QUEUES=$(ls -1 /sys/class/net/$DEFAULT_IFACE/queues/ | grep "rx-" | wc -l)
-        if [ "$RX_QUEUES" -gt 0 ]; then
-            echo "[*] Setting $RX_QUEUES receive queues"
-            if [ "$NETWORK_SPEED" -ge 10000 ]; then
-                RX_RING=4096
-            elif [ "$NETWORK_SPEED" -ge 1000 ]; then
-                RX_RING=2048
-            else
-                RX_RING=1024
-            fi
-            
-            # Try to set ring size
-            if ethtool -g "$DEFAULT_IFACE" &>/dev/null; then
-                MAX_RING=$(ethtool -g "$DEFAULT_IFACE" 2>/dev/null | grep "RX:" -A 1 | tail -1 | awk '{print $1}')
-                if [ -n "$MAX_RING" ] && [ "$MAX_RING" -gt 0 ]; then
-                    if [ "$RX_RING" -gt "$MAX_RING" ]; then
-                        RX_RING=$MAX_RING
-                    fi
-                    ethtool -G "$DEFAULT_IFACE" rx "$RX_RING" &>/dev/null && \
-                        echo "[*] $DEFAULT_IFACE receive ring size set to $RX_RING" || \
-                        echo "[*] Error setting receive ring size"
-                fi
+# 11. Sanitize /etc/sysctl.conf so it NEVER overrides our 99-xray-autotune.conf
+if [ -f /etc/sysctl.conf ]; then
+    cp /etc/sysctl.conf /etc/sysctl.conf.bak-xray 2>/dev/null || true
+    KEYS=$(grep -E '^[a-zA-Z0-9_.]+\s*=' "$SYSCTL_FILE" | awk -F= '{print $1}' | tr -d ' ')
+    for KEY in $KEYS; do
+        ESCAPED_KEY=$(echo "$KEY" | sed 's/\./\\./g')
+        sed -i -E "s/^(\s*${ESCAPED_KEY}\s*=)/# [Overridden by xray-autotune] \1/g" /etc/sysctl.conf
+    done
+fi
+
+# Apply sysctl parameters
+sysctl --system >/dev/null 2>&1 || sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1
+
+# 12. Hardware NIC, Qdisc, and Multi-Core CPU RPS/RFS Optimization
+if [ -n "$DEFAULT_IFACE" ] && [ -d "/sys/class/net/$DEFAULT_IFACE" ]; then
+    echo "[*] Optimizing Network Interface ($DEFAULT_IFACE) & CPU Core Distribution..."
+
+    # Increase TX Queue Length for high packet rates
+    ip link set dev "$DEFAULT_IFACE" txqueuelen 10000 2>/dev/null || true
+
+    # Apply root qdisc immediately
+    if command -v tc >/dev/null 2>&1; then
+        tc qdisc replace dev "$DEFAULT_IFACE" root "$QDISC" 2>/dev/null || true
+    fi
+
+    # Enable hardware offloading to reduce CPU load
+    if command -v ethtool >/dev/null 2>&1; then
+        ethtool -K "$DEFAULT_IFACE" tso on gso on gro on sg on rx on tx on 2>/dev/null || true
+
+        # Safely maximize NIC RX/TX ring buffers (runs ONLY at boot/install)
+        MAX_RX=$(ethtool -g "$DEFAULT_IFACE" 2>/dev/null | awk '/Pre-set maximums:/,/^$/' | awk '/RX:/ {print $2}' | head -n 1)
+        CUR_RX=$(ethtool -g "$DEFAULT_IFACE" 2>/dev/null | awk '/Current hardware settings:/,/^$/' | awk '/RX:/ {print $2}' | head -n 1)
+        if [[ "$MAX_RX" =~ ^[0-9]+$ ]] && [ "$MAX_RX" -gt 0 ]; then
+            TARGET_RX=$MAX_RX
+            [ "$TARGET_RX" -gt 4096 ] && TARGET_RX=4096
+            if [ "${CUR_RX:-0}" -lt "$TARGET_RX" ]; then
+                ethtool -G "$DEFAULT_IFACE" rx "$TARGET_RX" 2>/dev/null || true
             fi
         fi
     fi
-    
-    # Check and set TSO and LRO
-    if ethtool -k "$DEFAULT_IFACE" &>/dev/null; then
-        echo "[*] Optimizing transfer offload"
-        # Enable offload capabilities
-        ethtool -K "$DEFAULT_IFACE" tso on gso on gro on sg on rx on tx on &>/dev/null || true
+
+    # Calculate Hexadecimal Bitmask for ALL CPU cores (RPS) & RFS flow entries
+    if [ -d "/sys/class/net/$DEFAULT_IFACE/queues" ]; then
+        # Safe calculation of CPU hex mask for 1 to 64 cores
+        if [ "$CPU_CORES" -ge 32 ]; then
+            CPU_MASK="ffffffff"
+        else
+            CPU_MASK=$(printf '%x' $(( (1 << CPU_CORES) - 1 )))
+        fi
+
+        RX_COUNT=$(ls -1d /sys/class/net/"$DEFAULT_IFACE"/queues/rx-* 2>/dev/null | wc -l)
+        if [ "$RX_COUNT" -gt 0 ]; then
+            RFS_ENTRIES=32768
+            FLOW_CNT=$((RFS_ENTRIES / RX_COUNT))
+            sysctl -w net.core.rps_sock_flow_entries=$RFS_ENTRIES >/dev/null 2>&1 || true
+
+            for rx_dir in /sys/class/net/"$DEFAULT_IFACE"/queues/rx-*; do
+                [ -w "$rx_dir/rps_cpus" ] && echo "$CPU_MASK" > "$rx_dir/rps_cpus" 2>/dev/null || true
+                [ -w "$rx_dir/rps_flow_cnt" ] && echo "$FLOW_CNT" > "$rx_dir/rps_flow_cnt" 2>/dev/null || true
+            done
+            echo "[✓] RPS/RFS enabled across $CPU_CORES CPU cores (Mask: 0x$CPU_MASK, Queues: $RX_COUNT)."
+        fi
+
+        # Enable XPS (Transmit Packet Steering) if multiple TX queues exist
+        for tx_dir in /sys/class/net/"$DEFAULT_IFACE"/queues/tx-*; do
+            [ -w "$tx_dir/xps_cpus" ] && echo "$CPU_MASK" > "$tx_dir/xps_cpus" 2>/dev/null || true
+        done
     fi
-    
-    # Set queue rules for network interface
-    if tc qdisc show dev "$DEFAULT_IFACE" &>/dev/null; then
-        echo "[*] Setting queue policy for $DEFAULT_IFACE to $QDISC"
-        tc qdisc replace dev "$DEFAULT_IFACE" root "$QDISC" &>/dev/null || \
-            echo "[*] Error setting queue policy"
-    fi
-    
-    # MTU setting removed as requested
 fi
 
-echo -e "\e[1;32m[✓] System settings have been successfully optimized.\e[0m"
-exit 0
+echo "[✓] Xray optimization completed successfully at $(date)."
 EOF
 
 chmod +x "$INSTALL_PATH"
 
-# Create service or scheduling mechanism
-if command -v systemctl >/dev/null 2>&1; then
-    # systemd service
-    cat <<EOF > "$SERVICE_PATH"
+# 8. Create Boot-Once Systemd Service (NO periodic timer!)
+echo -e "\e[1;34m[*] Registering boot-time systemd service (xray-autotune.service)...\e[0m"
+cat << EOF > "$SERVICE_PATH"
 [Unit]
-Description=Auto-tune sysctl parameters
-After=network.target
+Description=Xray/V2Ray High-Concurrency Kernel & NIC Optimizer
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=$INSTALL_PATH
-TimeoutStartSec=300
-KillMode=process
-Restart=on-failure
-RestartSec=60
+RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # systemd timer
-    cat <<EOF > "$TIMER_PATH"
-[Unit]
-Description=Run autotune-sysctl periodically
-After=network.target
+systemctl daemon-reload
+systemctl enable xray-autotune.service >/dev/null 2>&1
+systemctl restart xray-autotune.service
 
-[Timer]
-OnBootSec=2min
-OnUnitActiveSec=8h
-AccuracySec=1m
-RandomizedDelaySec=30s
-Unit=autotune-sysctl.service
+# 9. Final Verification Summary Table
+echo ""
+echo -e "\e[1;32m==================================================================\e[0m"
+echo -e "\e[1;32m       XRAY / V2RAY OPTIMIZATION VERIFICATION REPORT              \e[0m"
+echo -e "\e[1;32m==================================================================\e[0m"
+MAIN_IFACE=$(ip route get 8.8.8.8 2>/dev/null | awk -- '{printf $5}' | head -n 1)
+RPS_VAL=$(cat /sys/class/net/${MAIN_IFACE}/queues/rx-0/rps_cpus 2>/dev/null || echo "N/A")
+CONNTRACK_STATUS=$( [ -d /proc/sys/net/netfilter ] && echo "Active (Tuned to $(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null))" || echo "Disabled (Optimal - Zero CPU Overhead)" )
 
-[Install]
-WantedBy=timers.target
-EOF
-fi
-
-# Install required drivers and modules
-echo -e "\e[1;34m[*] Checking and installing required modules...\e[0m"
-for MODULE in tcp_bbr sch_fq_codel sch_fq nf_conntrack; do
-    if ! lsmod | grep -q "$MODULE"; then
-        echo "[*] Loading module $MODULE"
-        modprobe "$MODULE" 2>/dev/null || echo "[!] Module $MODULE is not available"
-    fi
-done
-
-# Register modules to be loaded at boot
-if [ ! -f "/etc/modules-load.d/autotune.conf" ]; then
-    echo -e "# Required modules for autotune-sysctl\ntcp_bbr\nsch_fq_codel\nsch_fq\nnf_conntrack" > "/etc/modules-load.d/autotune.conf"
-    echo "[*] Required modules added to boot configuration file"
-fi
-
-# Setup scheduling mechanism
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl daemon-reload
-
-    echo -e "\e[1;34m[*] Enabling service and timer...\e[0m"
-    systemctl enable autotune-sysctl.service
-    systemctl enable autotune-sysctl.timer
-    systemctl start autotune-sysctl.service
-    systemctl start autotune-sysctl.timer
-    echo -e "\e[1;34m[*] The script will run every 8 hours via systemd timer.\e[0m"
-else
-    echo -e "\e[1;34m[*] Setting up cron job...\e[0m"
-    echo "0 */8 * * * root $INSTALL_PATH" > "$CRON_FILE"
-    chmod 644 "$CRON_FILE"
-    if command -v service >/dev/null 2>&1; then
-        service cron reload 2>/dev/null || service crond reload 2>/dev/null || true
-    fi
-    echo -e "\e[1;34m[*] The script will run every 8 hours via cron.\e[0m"
-fi
-
-echo -e "\e[1;32m[✓] Installation and configuration of autotune-sysctl completed successfully.\e[0m"
-echo -e "\e[1;34m[*] Settings saved to $SYSCTL_FILE.\e[0m"
-echo -e "\e[1;34m[*] Logs are saved to /var/log/autotune-sysctl.log.\e[0m"
-echo -e "\e[1;34m[*] For manual execution: sudo $INSTALL_PATH\e[0m"
-
-exit 0
+printf "%-32s : \e[1;36m%s\e[0m\n" "1. Congestion Control" "$(sysctl -n net.ipv4.tcp_congestion_control)"
+printf "%-32s : \e[1;36m%s\e[0m\n" "2. Default Queue Discipline" "$(sysctl -n net.core.default_qdisc)"
+printf "%-32s : \e[1;36m%s\e[0m\n" "3. Max Socket Backlog (somaxconn)" "$(sysctl -n net.core.somaxconn)"
+printf "%-32s : \e[1;36m%s\e[0m\n" "4. Netdev Max Backlog" "$(sysctl -n net.core.netdev_max_backlog)"
+printf "%-32s : \e[1;36m%s\e[0m\n" "5. Max Time-Wait Buckets" "$(sysctl -n net.ipv4.tcp_max_tw_buckets)"
+printf "%-32s : \e[1;36m%s\e[0m\n" "6. UDP Min Rmem/Wmem (QUIC)" "$(sysctl -n net.ipv4.udp_rmem_min) bytes"
+printf "%-32s : \e[1;36m%s\e[0m\n" "7. TCP Slow Start After Idle" "$(sysctl -n net.ipv4.tcp_slow_start_after_idle) (Disabled)"
+printf "%-32s : \e[1;36m%s\e[0m\n" "8. System File-Max" "$(sysctl -n fs.file-max)"
+printf "%-32s : \e[1;36m%s\e[0m\n" "9. CPU Multi-Core RPS Mask" "0x${RPS_VAL} (Interface: ${MAIN_IFACE})"
+printf "%-32s : \e[1;36m%s\e[0m\n" "10. Conntrack Status" "${CONNTRACK_STATUS}"
+printf "%-32s : \e[1;36m%s\e[0m\n" "11. Boot Service Status" "$(systemctl is-enabled xray-autotune.service)"
+echo -e "\e[1;32m==================================================================\e[0m"
+echo -e "\e[1;33m[NOTE] Reconnect your SSH session once to see 'ulimit -n' updated to 524288.\e[0m"
